@@ -1,0 +1,4 @@
+ALTER TABLE "Collection" ALTER COLUMN "size" SET NOT NULL;
+ALTER TABLE "Collection" ALTER COLUMN "tileAreaSqm" SET NOT NULL;
+ALTER TABLE "Product" DROP COLUMN "size";
+ALTER TABLE "Product" DROP COLUMN "tileAreaSqm";

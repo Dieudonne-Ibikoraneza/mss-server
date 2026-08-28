@@ -1,0 +1,761 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CLIENT
+  SALES_PERSON
+  STOCK_MANAGER
+  DATA_ANALYST
+  ADMIN
+}
+
+enum Language {
+  EN
+  RW
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum HearAboutUs {
+  SOCIAL_MEDIA
+  REFERRAL
+  ADVERTISEMENT
+  SEARCH_ENGINE
+  OTHER
+}
+
+enum SuitableFor {
+  FLOOR
+  WALL
+  BOTH
+}
+
+enum RoomType {
+  LIVING_ROOM
+  BEDROOM
+  BATHROOM
+  KITCHEN
+  BALCONY
+  STAIRS
+  GATES
+  OUTDOOR
+}
+
+enum OrderType {
+  PURCHASE
+  BOOKING
+}
+
+enum OrderCreatorType {
+  CUSTOMER
+  STAFF
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  READY_FOR_DISPATCH
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  MOMO
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum TileEventType {
+  VIEWED
+  APPLIED
+  COMPARED
+  SAVED
+  SELECTED_FROM_RECOMMENDATION
+  PURCHASED
+}
+
+enum JourneyStage {
+  OPENED_SYSTEM
+  CREATED_ROOM
+  ENTERED_DIMENSIONS
+  VIEWED_TILE
+  APPLIED_TILE
+  SAVED_DESIGN
+  REQUESTED_QUOTATION
+  NEGOTIATED
+  PLACED_ORDER
+  PURCHASED
+}
+
+enum RecommendationDecision {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum ChatMediaJobType {
+  IMAGE_PREVIEW
+  VIDEO_PREVIEW
+}
+
+enum ChatMediaJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum QuoteStatus {
+  REQUESTED
+  NEGOTIATING
+  ACCEPTED
+  DECLINED
+  CONVERTED_TO_ORDER
+}
+
+/// Commercial state of an order's quotation, from 3.7/3.11: the stock team
+/// reviews the order, sets a transport fee and sends the quotation, the
+/// customer pays and marks it submitted, the stock team verifies it.
+enum QuotationStatus {
+  AWAITING_REVIEW
+  QUOTATION_SENT
+  PAYMENT_SUBMITTED
+  PAYMENT_VERIFIED
+}
+
+/// Who wrote a message on an order's negotiation thread.
+enum OrderMessageAuthor {
+  SYSTEM
+  CUSTOMER
+  STAFF
+}
+
+/// Direction of a stock movement, for the stock manager's reports (3.11).
+/// INBOUND = restock/delivery in, OUTBOUND = consumed by a delivered order,
+/// ADJUSTMENT = manual correction (count, damage, write-off).
+enum StockMovementType {
+  INBOUND
+  OUTBOUND
+  ADJUSTMENT
+}
+
+// ---------------------------------------------------------------------------
+// Identity & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String       @id @default(uuid())
+  fullName        String
+  email           String?      @unique
+  phone           String?      @unique
+  role            Role         @default(CLIENT)
+  status          UserStatus   @default(ACTIVE)
+  language        Language     @default(EN)
+  heardAboutUs    HearAboutUs?
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  refreshTokens           RefreshToken[]
+  favorites               Favorite[]
+  roomDesigns             RoomDesign[]
+  cart                    Cart?
+  ordersAsCustomer        Order[]                  @relation("OrdersAsCustomer")
+  ordersCreated           Order[]                  @relation("OrdersCreatedBy")
+  stockAdjustments        StockAdjustment[]
+  tileEvents              TileEvent[]
+  journeyEvents           CustomerJourneyEvent[]
+  recommendations         Recommendation[]
+  quoteRequests           QuoteRequest[]
+  chatConversations       ChatConversation[]
+  orderStatusEvents       OrderStatusEvent[]
+  orderMessages           OrderMessage[]
+  cartNegotiations        CartNegotiation[]
+  cartNegotiationMessages CartNegotiationMessage[]
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Collection {
+  id          String   @id @default(uuid())
+  title       String
+  slug        String   @unique
+  description String?
+  image       String?
+  /// Physical tile size shared by every product in this collection, e.g. "25×40cm".
+  size        String
+  /// Area of a single tile of this size, in sqm — derived from `size`, shared by every product in the collection.
+  tileAreaSqm Decimal  @db.Decimal(10, 4)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+}
+
+model Product {
+  id             String      @id @default(uuid())
+  sku            String      @unique
+  name           String
+  slug           String      @unique
+  collectionId   String
+  collection     Collection  @relation(fields: [collectionId], references: [id])
+  boxCoverageSqm Decimal     @db.Decimal(10, 4)
+  piecesPerBox   Int
+  /// Selling price per box — what the client is shown and pays. Not the cost
+  /// price; that lives on `Inventory.averageCostPrice` since it's a moving
+  /// average across purchase batches, not a single fixed value.
+  price          Decimal     @db.Decimal(12, 2)
+  currency       String      @default("RWF")
+  /// Single product image (the catalog shows exactly one image per product).
+  image          String
+  description    String?
+  suitableFor    SuitableFor @default(BOTH)
+  roomTypes      RoomType[]
+  isActive       Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  inventory        Inventory?
+  stockAdjustments StockAdjustment[]
+  cartItems        CartItem[]
+  orderItems       OrderItem[]
+  favorites        Favorite[]
+  tileEvents       TileEvent[]
+  recommendations  Recommendation[]
+  roomDesignTiles  RoomDesignTile[]
+
+  @@index([collectionId])
+}
+
+model Inventory {
+  id                String   @id @default(uuid())
+  productId         String   @unique
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantityOnHand    Int      @default(0)
+  reservedQuantity  Int      @default(0)
+  /// Moving weighted-average cost PER PIECE (what we paid, not the selling
+  /// price) across every batch received. Recomputed on each stock-in that
+  /// reports a cost: (oldAvgCost*oldQty + newCost*newQty) / (oldQty+newQty).
+  /// This is what inventory valuation is priced at, never the selling price.
+  averageCostPrice  Decimal  @default(0) @db.Decimal(12, 4)
+  lowStockThreshold Int      @default(20)
+  updatedAt         DateTime @updatedAt
+}
+
+/// Every change to on-hand stock, whatever caused it — the single feed behind
+/// the stock manager's movement report (3.11 "Generate stock reports").
+model StockAdjustment {
+  id               String            @id @default(uuid())
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// Signed change in pieces: positive for stock coming in, negative for stock going out.
+  changeQty        Int
+  type             StockMovementType @default(ADJUSTMENT)
+  /// Document this movement traces back to, e.g. a purchase order or an order number.
+  reference        String?
+  reason           String
+  /// What we paid per box for THIS batch. Only set for stock coming in with a
+  /// known cost — outbound movements and corrections with no known cost leave
+  /// this null and don't touch the running average.
+  costPrice        Decimal?          @db.Decimal(12, 4)
+  /// Snapshot of `Inventory.averageCostPrice` (per piece) right after this
+  /// movement was applied — kept so historical reports don't need to replay
+  /// the whole movement feed to know what the average was at the time.
+  averageCostAfter Decimal?          @db.Decimal(12, 4)
+  adjustedById     String?
+  adjustedBy       User?             @relation(fields: [adjustedById], references: [id])
+  createdAt        DateTime          @default(now())
+
+  @@index([productId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Cart, orders, payments
+// ---------------------------------------------------------------------------
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  updatedAt DateTime   @updatedAt
+  createdAt DateTime   @default(now())
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  cartId    String
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  areaSqm   Decimal  @db.Decimal(10, 4)
+  createdAt DateTime @default(now())
+
+  @@unique([cartId, productId])
+}
+
+model Order {
+  id                 String           @id @default(uuid())
+  orderNumber        String           @unique
+  type               OrderType        @default(PURCHASE)
+  status             OrderStatus      @default(PENDING)
+  customerId         String
+  customer           User             @relation("OrdersAsCustomer", fields: [customerId], references: [id])
+  createdById        String
+  createdBy          User             @relation("OrdersCreatedBy", fields: [createdById], references: [id])
+  createdByType      OrderCreatorType @default(CUSTOMER)
+  subtotal           Decimal          @db.Decimal(14, 2)
+  total              Decimal          @db.Decimal(14, 2)
+  currency           String           @default("RWF")
+  notes              String?
+  expectedDeliveryAt DateTime?
+  deliveredAt        DateTime?
+
+  // --- Quotation (3.7 / 3.11): the commercial layer on top of the order ---
+  quotationStatus    QuotationStatus @default(AWAITING_REVIEW)
+  /// Set by the stock team once the delivery has been costed. 0 means free transport,
+  /// null means "not quoted yet" — the two are deliberately distinguishable.
+  transportFee       Decimal?        @db.Decimal(14, 2)
+  transportFeeNote   String?
+  quotationSentAt    DateTime?
+  /// Set the first time the CUSTOMER opens the in-system PDF quotation.
+  /// `markPaymentSubmitted` requires this to be set first — the customer has
+  /// to have actually seen the quotation before they can say they paid it.
+  quotationViewedAt  DateTime?
+  paymentSubmittedAt DateTime?
+  paymentVerifiedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items        OrderItem[]
+  statusEvents OrderStatusEvent[]
+  payments     Payment[]
+  quoteRequest QuoteRequest?
+  delivery     OrderDelivery?
+  messages     OrderMessage[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model OrderItem {
+  id               String  @id @default(uuid())
+  orderId          String
+  order            Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product @relation(fields: [productId], references: [id])
+  requiredAreaSqm  Decimal @db.Decimal(10, 4)
+  boxes            Int
+  additionalPieces Int
+  totalPieces      Int
+  unitPrice        Decimal @db.Decimal(12, 2)
+  totalPrice       Decimal @db.Decimal(14, 2)
+
+  @@index([orderId])
+}
+
+model OrderStatusEvent {
+  id          String      @id @default(uuid())
+  orderId     String
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status      OrderStatus
+  note        String?
+  createdById String?
+  createdBy   User?       @relation(fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
+
+  @@index([orderId])
+}
+
+/// Where and when the customer wants the order delivered. Supplied by the
+/// customer (or by staff on their behalf) after the order is placed, and read by
+/// the stock team when costing the transport fee on the quotation.
+model OrderDelivery {
+  id            String   @id @default(uuid())
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  contactName   String
+  phone         String
+  address       String
+  city          String
+  /// Free text rather than a date — customers give things like "within 3 days of confirmation".
+  preferredDate String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+/// Negotiation thread on an order — the customer and the stock team agreeing on
+/// quantities and delivery when what was ordered exceeds what is on hand
+/// (journey stage NEGOTIATED). SYSTEM messages are generated by the platform to
+/// open the thread with the shortage that triggered it.
+model OrderMessage {
+  id        String             @id @default(uuid())
+  orderId   String
+  order     Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  author    OrderMessageAuthor
+  senderId  String?
+  sender    User?              @relation(fields: [senderId], references: [id])
+  body      String
+  /// Structured payload for SYSTEM messages, e.g. the per-product shortage list.
+  metadata  Json?
+  createdAt DateTime           @default(now())
+
+  @@index([orderId])
+}
+
+/// A pre-order negotiation: the customer's cart couldn't be fully covered by
+/// stock on hand, so instead of an order that can't be honoured, they message
+/// the stock team directly from the cart. Linked to the customer, not an
+/// order, because no order exists yet. One thread accumulates per customer —
+/// a later cart shortage reuses it rather than starting a new one — and it is
+/// never deleted once the customer's cart clears: the stock manager's
+/// negotiations inbox keeps it as a permanent record.
+model CartNegotiation {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   User     @relation(fields: [customerId], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  items    CartNegotiationItem[]
+  messages CartNegotiationMessage[]
+
+  @@index([customerId])
+}
+
+/// Snapshot of one short product exactly as the storefront presented it when
+/// the message was sent — kept even if the product's price, name, or stock
+/// changes afterwards. Deliberately not a `Product` foreign key: the
+/// storefront cart isn't wired to live product/inventory records yet, so
+/// this takes whatever the client sends (id, name, and a human-readable
+/// availability note) as-is rather than trying to re-derive it server-side.
+model CartNegotiationItem {
+  id               String          @id @default(uuid())
+  negotiationId    String
+  negotiation      CartNegotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+  productId        String
+  productName      String
+  requestedAreaSqm Decimal         @db.Decimal(10, 2)
+  /// e.g. "Low stock" or "Out of stock" — whatever the cart showed the customer.
+  availabilityNote String
+  createdAt        DateTime        @default(now())
+
+  @@index([negotiationId])
+}
+
+model CartNegotiationMessage {
+  id            String             @id @default(uuid())
+  negotiationId String
+  negotiation   CartNegotiation    @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+  author        OrderMessageAuthor
+  senderId      String?
+  sender        User?              @relation(fields: [senderId], references: [id])
+  body          String
+  createdAt     DateTime           @default(now())
+
+  @@index([negotiationId])
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method      PaymentMethod
+  status      PaymentStatus @default(PENDING)
+  amount      Decimal       @db.Decimal(14, 2)
+  currency    String        @default("RWF")
+  providerRef String?
+  rawPayload  Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([orderId])
+}
+
+model QuoteRequest {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  orderId   String?     @unique
+  order     Order?      @relation(fields: [orderId], references: [id])
+  items     Json
+  status    QuoteStatus @default(REQUESTED)
+  notes     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Favorites & 3D room visualizer
+// ---------------------------------------------------------------------------
+
+model Favorite {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+}
+
+model Room {
+  id          String   @id @default(uuid())
+  type        RoomType
+  name        String
+  description String?
+  modelUrl    String
+  thumbnail   String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  designs RoomDesign[]
+}
+
+model RoomDesign {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roomId          String
+  room            Room     @relation(fields: [roomId], references: [id])
+  name            String
+  previewImageUrl String?
+  sharedWithSales Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tiles RoomDesignTile[]
+
+  @@index([userId])
+}
+
+model RoomDesignTile {
+  id           String     @id @default(uuid())
+  roomDesignId String
+  roomDesign   RoomDesign @relation(fields: [roomDesignId], references: [id], onDelete: Cascade)
+  surface      String
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id])
+
+  @@unique([roomDesignId, surface])
+}
+
+// ---------------------------------------------------------------------------
+// Chatbot
+// ---------------------------------------------------------------------------
+
+model ChatConversation {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  sessionId String
+  language  Language @default(EN)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages  ChatMessage[]
+  mediaJobs ChatMediaJob[]
+
+  @@index([userId])
+  @@index([sessionId])
+}
+
+model ChatMessage {
+  id             String           @id @default(uuid())
+  conversationId String
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           ChatRole
+  content        String
+  attachments    Json?
+  createdAt      DateTime         @default(now())
+
+  @@index([conversationId])
+}
+
+model ChatMediaJob {
+  id             String             @id @default(uuid())
+  conversationId String
+  conversation   ChatConversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  type           ChatMediaJobType
+  status         ChatMediaJobStatus @default(QUEUED)
+  inputUrl       String?
+  outputUrl      String?
+  error          String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([conversationId])
+}
+
+model KnowledgeBaseEntry {
+  id        String   @id @default(uuid())
+  question  String
+  answer    String
+  tags      String[]
+  language  Language @default(EN)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Editable, bilingual email copy, keyed by a stable code (e.g. "OTP_VERIFICATION")
+/// so NotificationsService never has hardcoded message text. One row per
+/// (key, language) — seeded with the starter set, editable afterward without a
+/// deploy. Bodies use {{placeholder}} tokens, substituted at send time.
+model EmailTemplate {
+  id        String   @id @default(uuid())
+  key       String
+  language  Language @default(EN)
+  subject   String
+  bodyText  String
+  bodyHtml  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([key, language])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics: tile interactions, customer journey, AI recommendations
+// ---------------------------------------------------------------------------
+
+model TileEvent {
+  id        String        @id @default(uuid())
+  userId    String?
+  user      User?         @relation(fields: [userId], references: [id])
+  sessionId String
+  productId String
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      TileEventType
+  metadata  Json?
+  createdAt DateTime      @default(now())
+
+  @@index([productId, type])
+  @@index([userId])
+  @@index([sessionId])
+}
+
+model CustomerJourneyEvent {
+  id        String       @id @default(uuid())
+  userId    String?
+  user      User?        @relation(fields: [userId], references: [id])
+  sessionId String
+  stage     JourneyStage
+  metadata  Json?
+  createdAt DateTime     @default(now())
+
+  @@index([sessionId])
+  @@index([stage])
+}
+
+model Recommendation {
+  id         String                 @id @default(uuid())
+  userId     String?
+  user       User?                  @relation(fields: [userId], references: [id])
+  sessionId  String
+  productId  String
+  product    Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  rank       Int
+  matchScore Decimal                @db.Decimal(5, 2)
+  reason     String?
+  decision   RecommendationDecision @default(PENDING)
+  purchased  Boolean                @default(false)
+  feedback   String?
+  createdAt  DateTime               @default(now())
+  decidedAt  DateTime?
+
+  @@index([productId])
+  @@index([sessionId])
+}
+
+// ---------------------------------------------------------------------------
+// Platform configuration (admin panel, 3.10)
+// ---------------------------------------------------------------------------
+
+/// Key/value platform configuration edited from the admin settings screen
+/// (platform name, default currency, notification toggles, …) so operators can
+/// change it without a deploy. Seeded with the defaults the UI ships with.
+model PlatformSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// The customer-profiling questions the AI recommendation flow asks (3.6:
+/// "room type, room size, wall paint color, if room type is living room ask
+/// furniture color, doors, tables, curtains, chairs"). A question with a
+/// `roomType` is conditional — only asked for that room type.
+model ProfilingQuestion {
+  id         String    @id @default(uuid())
+  text       String
+  isRequired Boolean   @default(true)
+  /// Null = always asked. Set = only asked when the customer picked this room type.
+  roomType   RoomType?
+  position   Int       @default(0)
+  isActive   Boolean   @default(true)
+  language   Language  @default(EN)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([position])
+}
