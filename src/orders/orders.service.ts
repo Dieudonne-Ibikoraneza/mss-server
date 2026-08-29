@@ -41,6 +41,7 @@ const ORDER_INCLUDE = {
   statusEvents: { orderBy: { createdAt: 'asc' } },
   payments: true,
   customer: true,
+  createdBy: { select: { id: true, fullName: true } },
   delivery: true,
 } satisfies Prisma.OrderInclude;
 
