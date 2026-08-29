@@ -18,6 +18,7 @@ import { RedisService } from '@/redis/redis.service';
 import { EventsService } from '@/events/events.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
+import { canSeeExactStock } from '@/common/utils/stock-status';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { invalidateProductsCache } from '@/products/products-cache.util';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -42,6 +43,27 @@ const ORDER_INCLUDE = {
   customer: true,
   delivery: true,
 } satisfies Prisma.OrderInclude;
+
+/**
+ * Order items nest their full product row (for name/image/price display) —
+ * strip the same staff-only fields `ProductsService` keeps out of a client's
+ * own view (doc 3.2) before an order ever reaches a non-staff viewer.
+ */
+function sanitizeOrder<T extends { items: readonly { product: Record<string, unknown> | null }[] }>(
+  order: T,
+  viewerRole: Role,
+): T {
+  if (canSeeExactStock(viewerRole)) return order;
+  return {
+    ...order,
+    items: order.items.map((item) => {
+      if (!item.product) return item;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { quantityOnHandSqm, averageCostPrice, ...productRest } = item.product;
+      return { ...item, product: productRest };
+    }),
+  };
+}
 
 export interface StockShortage {
   productId: string;
@@ -239,7 +261,10 @@ export class OrdersService {
     const [items, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
-        include: { items: true, customer: true, delivery: true },
+        // Same shape as `findOne` — the order list shows each item's product
+        // name/image (doc-driven UI, not just a bare id), so it needs the
+        // same join, not a lighter one.
+        include: ORDER_INCLUDE,
         skip: query.skip,
         take: query.limit,
         orderBy: { createdAt: 'desc' },
@@ -247,7 +272,12 @@ export class OrdersService {
       this.prisma.order.count({ where }),
     ]);
 
-    return paginate(items, total, query.page, query.limit);
+    return paginate(
+      items.map((order) => sanitizeOrder(order, actingUser.role)),
+      total,
+      query.page,
+      query.limit,
+    );
   }
 
   async findOne(id: string, actingUser: AuthenticatedUser) {
@@ -257,7 +287,7 @@ export class OrdersService {
     if (!this.isStaff(actingUser.role) && order.customerId !== actingUser.id) {
       throw new ForbiddenException('You do not have access to this order.');
     }
-    return order;
+    return sanitizeOrder(order, actingUser.role);
   }
 
   async updateStatus(id: string, dto: UpdateOrderStatusDto, actingUser: AuthenticatedUser) {
