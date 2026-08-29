@@ -5,8 +5,8 @@ import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
-import { calculateTileQuantity } from '@/common/utils/tile-calculator';
-import { stockStatusOf } from '@/common/utils/stock-status';
+import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-calculator';
+import { canSeeExactStock, getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductSort, QueryProductsDto } from './dto/query-products.dto';
@@ -17,12 +17,6 @@ import {
   productDetailCachePrefix,
   invalidateProductsCache,
 } from './products-cache.util';
-
-const canSeeExactStock = (role?: Role) =>
-  role === Role.ADMIN ||
-  role === Role.STOCK_MANAGER ||
-  role === Role.SALES_PERSON ||
-  role === Role.DATA_ANALYST;
 
 /** Two viewers only ever see two different shapes of a product (exact stock or not), so the cache only needs two buckets. */
 const roleBucket = (role?: Role) => (canSeeExactStock(role) ? 'staff' : 'public');
@@ -45,26 +39,38 @@ export class ProductsService {
   };
 
   private serialize(
-    product: Prisma.ProductGetPayload<{ include: { inventory: true; collection: true } }>,
+    product: Prisma.ProductGetPayload<{ include: { collection: true } }>,
+    threshold: number,
     viewerRole?: Role,
   ) {
-    const quantityOnHand = product.inventory?.quantityOnHand ?? 0;
-    const threshold = product.inventory?.lowStockThreshold ?? 20;
-    const averageCostPrice = Number(product.inventory?.averageCostPrice ?? 0);
-    const { inventory, collection, ...rest } = product;
+    // quantityOnHandSqm/averageCostPrice are pulled out of `rest` explicitly —
+    // they live directly on the Product row now, so leaving them in `rest`
+    // would leak exact stock/cost to clients and the public catalog.
+    const { collection, quantityOnHandSqm, averageCostPrice, ...rest } = product;
+    const onHandSqm = Number(quantityOnHandSqm);
+    const costPrice = Number(averageCostPrice);
 
     return {
       ...rest,
       size: collection.size,
       tileAreaSqm: Number(collection.tileAreaSqm),
-      stockStatus: stockStatusOf(quantityOnHand, threshold),
+      stockStatus: stockStatusOf(onHandSqm, threshold),
       ...(canSeeExactStock(viewerRole)
         ? {
-            quantityOnHand,
-            reservedQuantity: inventory?.reservedQuantity ?? 0,
+            // Ground truth is m² — boxes/pieces alongside it are a display
+            // conversion only, never re-stored. Floored, not the ceiling
+            // `calculateTileQuantity` uses for "how much to buy": you can't
+            // physically hold a partial piece, so any sliver of area smaller
+            // than one tile just isn't a whole piece yet.
+            quantityOnHandSqm: onHandSqm,
+            onHandBreakdown: piecesFromAreaSqm(onHandSqm, {
+              tileAreaSqm: Number(collection.tileAreaSqm),
+              boxCoverageSqm: Number(rest.boxCoverageSqm),
+              piecesPerBox: rest.piecesPerBox,
+            }),
             // Cost figures — never exposed to clients/public, same visibility as exact stock.
-            averageCostPrice,
-            inventoryValue: quantityOnHand * averageCostPrice,
+            averageCostPrice: costPrice,
+            inventoryValue: onHandSqm * costPrice,
           }
         : {}),
     };
@@ -88,19 +94,20 @@ export class ProductsService {
       name: query.search ? { contains: query.search, mode: 'insensitive' } : undefined,
     };
 
-    const [items, total] = await Promise.all([
+    const [items, total, threshold] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { inventory: true, collection: true },
+        include: { collection: true },
         skip: query.skip,
         take: query.limit,
         orderBy: ProductsService.ORDER_BY[query.sort ?? ProductSort.NEWEST],
       }),
       this.prisma.product.count({ where }),
+      getLowStockThreshold(this.prisma),
     ]);
 
     const result = paginate(
-      items.map((item) => this.serialize(item, viewerRole)),
+      items.map((item) => this.serialize(item, threshold, viewerRole)),
       total,
       query.page,
       query.limit,
@@ -114,24 +121,24 @@ export class ProductsService {
     const cached = await this.redis.get(cacheKey);
     if (cached) return cached;
 
-    const product = await this.prisma.product.findUnique({
-      where: { id },
-      include: { inventory: true, collection: true },
-    });
+    const [product, threshold] = await Promise.all([
+      this.prisma.product.findUnique({ where: { id }, include: { collection: true } }),
+      getLowStockThreshold(this.prisma),
+    ]);
     if (!product) throw new NotFoundException('Product not found.');
 
-    const result = this.serialize(product, viewerRole);
+    const result = this.serialize(product, threshold, viewerRole);
     await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 
   async create(dto: CreateProductDto, createdById?: string) {
-    const initialQuantity = dto.initialQuantity ?? 0;
-    // Cost is entered per box (mirrors `price`), stored per piece to line up
-    // with quantities that are always tracked in pieces.
+    const initialAreaSqm = dto.initialAreaSqm ?? 0;
+    // Cost is entered per m² now, same unit as `price` and as stock itself —
+    // no more box/piece conversion needed to store it.
     const averageCostPrice =
-      initialQuantity > 0 && dto.initialCostPrice !== undefined
-        ? new Prisma.Decimal(dto.initialCostPrice).div(dto.piecesPerBox)
+      initialAreaSqm > 0 && dto.initialCostPrice !== undefined
+        ? new Prisma.Decimal(dto.initialCostPrice)
         : new Prisma.Decimal(0);
 
     const product = await this.prisma.product.create({
@@ -147,19 +154,14 @@ export class ProductsService {
         description: dto.description,
         suitableFor: dto.suitableFor,
         roomTypes: dto.roomTypes,
-        inventory: {
-          create: {
-            quantityOnHand: initialQuantity,
-            lowStockThreshold: dto.lowStockThreshold ?? 20,
-            averageCostPrice,
-          },
-        },
+        quantityOnHandSqm: initialAreaSqm,
+        averageCostPrice,
         // Audit trail for the opening stock, same feed every other movement writes to.
-        ...(initialQuantity > 0
+        ...(initialAreaSqm > 0
           ? {
               stockAdjustments: {
                 create: {
-                  changeQty: initialQuantity,
+                  changeAreaSqm: initialAreaSqm,
                   type: StockMovementType.INBOUND,
                   reason: 'Initial stock on product creation',
                   costPrice: dto.initialCostPrice,
@@ -170,21 +172,24 @@ export class ProductsService {
             }
           : {}),
       },
-      include: { inventory: true, collection: true },
+      include: { collection: true },
     });
     await invalidateProductsCache(this.redis, [product.id]);
-    return this.serialize(product, Role.ADMIN);
+    return this.serialize(product, await getLowStockThreshold(this.prisma), Role.ADMIN);
   }
 
   async update(id: string, dto: UpdateProductDto) {
     await this.findOne(id);
-    const product = await this.prisma.product.update({
-      where: { id },
-      data: { ...dto, slug: dto.name ? slugify(dto.name) : undefined },
-      include: { inventory: true, collection: true },
-    });
+    const [product, threshold] = await Promise.all([
+      this.prisma.product.update({
+        where: { id },
+        data: { ...dto, slug: dto.name ? slugify(dto.name) : undefined },
+        include: { collection: true },
+      }),
+      getLowStockThreshold(this.prisma),
+    ]);
     await invalidateProductsCache(this.redis, [id]);
-    return this.serialize(product, Role.ADMIN);
+    return this.serialize(product, threshold, Role.ADMIN);
   }
 
   async remove(id: string) {
@@ -207,57 +212,53 @@ export class ProductsService {
       piecesPerBox: product.piecesPerBox,
     });
 
-    const totalPrice = quantity.totalPieces * (Number(product.price) / product.piecesPerBox);
+    // Priced by area, not by the box — see `orders.service.ts#create`.
+    const totalPrice = quantity.purchasedArea * Number(product.price);
 
     return { ...quantity, unitPrice: Number(product.price), totalPrice };
   }
 
   async adjustStock(productId: string, dto: AdjustStockDto, adjustedById: string) {
-    const inventory = await this.prisma.inventory.findUnique({ where: { productId } });
-    if (!inventory) throw new NotFoundException('Product has no inventory record.');
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    if (!product) throw new NotFoundException('Product not found.');
 
-    const nextQuantity = inventory.quantityOnHand + dto.changeQty;
-    if (nextQuantity < 0) {
+    const nextQuantity = new Prisma.Decimal(product.quantityOnHandSqm).add(dto.changeAreaSqm);
+    if (nextQuantity.isNegative()) {
       throw new BadRequestException('Adjustment would result in negative stock.');
     }
 
-    if (dto.costPrice !== undefined && dto.changeQty <= 0) {
+    if (dto.costPrice !== undefined && dto.changeAreaSqm <= 0) {
       throw new BadRequestException(
-        'A cost price only applies to stock coming in (changeQty must be positive).',
+        'A cost price only applies to stock coming in (changeAreaSqm must be positive).',
       );
     }
 
     const type =
-      dto.type ?? (dto.changeQty >= 0 ? StockMovementType.INBOUND : StockMovementType.OUTBOUND);
+      dto.type ?? (dto.changeAreaSqm >= 0 ? StockMovementType.INBOUND : StockMovementType.OUTBOUND);
 
     // Moving weighted-average cost — only recomputed when this batch's cost
-    // is known; otherwise the average carries forward unchanged.
-    let averageCostPrice = inventory.averageCostPrice;
+    // is known; otherwise the average carries forward unchanged. Both sides
+    // are already per-m², so no box/piece conversion is needed here anymore.
+    let averageCostPrice = product.averageCostPrice;
     if (dto.costPrice !== undefined) {
-      const product = await this.prisma.product.findUnique({
-        where: { id: productId },
-        select: { piecesPerBox: true },
-      });
-      if (!product) throw new NotFoundException('Product not found.');
-
-      const costPerPiece = new Prisma.Decimal(dto.costPrice).div(product.piecesPerBox);
-      const oldTotalCost = new Prisma.Decimal(inventory.averageCostPrice).mul(
-        inventory.quantityOnHand,
+      const costPerSqm = new Prisma.Decimal(dto.costPrice);
+      const oldTotalCost = new Prisma.Decimal(product.averageCostPrice).mul(
+        product.quantityOnHandSqm,
       );
-      const incomingTotalCost = costPerPiece.mul(dto.changeQty);
-      // nextQuantity is guaranteed > 0 here: changeQty > 0 (checked above) and quantityOnHand >= 0.
+      const incomingTotalCost = costPerSqm.mul(dto.changeAreaSqm);
+      // nextQuantity is guaranteed > 0 here: changeAreaSqm > 0 (checked above) and quantityOnHandSqm >= 0.
       averageCostPrice = oldTotalCost.add(incomingTotalCost).div(nextQuantity);
     }
 
     const [updated] = await this.prisma.$transaction([
-      this.prisma.inventory.update({
-        where: { productId },
-        data: { quantityOnHand: nextQuantity, averageCostPrice },
+      this.prisma.product.update({
+        where: { id: productId },
+        data: { quantityOnHandSqm: nextQuantity, averageCostPrice },
       }),
       this.prisma.stockAdjustment.create({
         data: {
           productId,
-          changeQty: dto.changeQty,
+          changeAreaSqm: dto.changeAreaSqm,
           type,
           reference: dto.reference,
           reason: dto.reason,

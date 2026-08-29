@@ -1,8 +1,8 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { ChatRole, Language, Prisma } from '@prisma/client';
+import { ChatRole, Language, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
-import { stockStatusOf } from '@/common/utils/stock-status';
+import { canSeeExactStock, getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import {
   CHAT_PROVIDER,
   type ChatProductCandidate,
@@ -54,7 +54,7 @@ export class ChatbotService {
       data: { conversationId: conversation.id, role: ChatRole.USER, content: dto.content },
     });
 
-    const [history, knowledgeBase, candidateProducts] = await Promise.all([
+    const [history, knowledgeBase, candidateProducts, lowStockThreshold] = await Promise.all([
       this.prisma.chatMessage.findMany({
         where: { conversationId: conversation.id },
         orderBy: { createdAt: 'asc' },
@@ -66,10 +66,11 @@ export class ChatbotService {
       }),
       this.prisma.product.findMany({
         where: { isActive: true },
-        include: { inventory: true, collection: true },
+        include: { collection: true },
         orderBy: { createdAt: 'desc' },
         take: MAX_CANDIDATE_PRODUCTS,
       }),
+      getLowStockThreshold(this.prisma),
     ]);
 
     const candidates: ChatProductCandidate[] = candidateProducts.map((product) => ({
@@ -81,10 +82,7 @@ export class ChatbotService {
       roomTypes: product.roomTypes,
       price: Number(product.price),
       currency: product.currency,
-      stockStatus: stockStatusOf(
-        product.inventory?.quantityOnHand ?? 0,
-        product.inventory?.lowStockThreshold ?? 20,
-      ),
+      stockStatus: stockStatusOf(Number(product.quantityOnHandSqm), lowStockThreshold),
     }));
 
     const { reply, picks } = await this.chatProvider.reply({
@@ -119,7 +117,7 @@ export class ChatbotService {
   private async persistAndResolveRecommendations(
     picks: { productId: string; matchScore: number; reason: string }[],
     candidateProducts: Prisma.ProductGetPayload<{
-      include: { inventory: true; collection: true };
+      include: { collection: true };
     }>[],
     userId: string | undefined,
     sessionId: string,
@@ -163,14 +161,27 @@ export class ChatbotService {
     });
   }
 
-  async compareProducts(dto: CompareProductsDto, userId?: string) {
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: dto.productIds } },
-      include: { inventory: true },
-    });
-    if (products.length !== dto.productIds.length) {
+  async compareProducts(dto: CompareProductsDto, userId?: string, viewerRole?: Role) {
+    const [rows, lowStockThreshold] = await Promise.all([
+      this.prisma.product.findMany({ where: { id: { in: dto.productIds } } }),
+      getLowStockThreshold(this.prisma),
+    ]);
+    if (rows.length !== dto.productIds.length) {
       throw new NotFoundException('One or more products could not be found.');
     }
+
+    // This endpoint is public (anonymous visitors can compare products), so
+    // exact stock/cost — staff-only everywhere else — must be stripped here too.
+    const products = rows.map(({ quantityOnHandSqm, averageCostPrice, ...rest }) => ({
+      ...rest,
+      stockStatus: stockStatusOf(Number(quantityOnHandSqm), lowStockThreshold),
+      ...(canSeeExactStock(viewerRole)
+        ? {
+            quantityOnHandSqm: Number(quantityOnHandSqm),
+            averageCostPrice: Number(averageCostPrice),
+          }
+        : {}),
+    }));
 
     await Promise.all(
       dto.productIds.map((productId) =>

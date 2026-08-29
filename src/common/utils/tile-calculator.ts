@@ -18,14 +18,17 @@ export type TileQuantity = TilePackaging & {
  * Mirrors client/src/lib/tile-calculator.ts so the server-computed price
  * quote always matches what the client previewed before checkout.
  */
+/** Clears the odd floating-point trailing digit (e.g. 9.6 + 0.4 = 10.000000000000002) that plain arithmetic on areas is prone to, without rounding away genuine precision like 4.8 or 1.5. */
+const roundArea = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
+
 export const calculateTileQuantity = (
   requiredArea: number,
   packaging: TilePackaging,
 ): TileQuantity => {
   const area = Math.max(0, Number.isFinite(requiredArea) ? requiredArea : 0);
   const completeBoxes = Math.floor(area / packaging.boxCoverageSqm);
-  const boxArea = completeBoxes * packaging.boxCoverageSqm;
-  const remainingArea = Math.max(0, area - boxArea);
+  const boxArea = roundArea(completeBoxes * packaging.boxCoverageSqm);
+  const remainingArea = roundArea(Math.max(0, area - boxArea));
   const remainingPieces = Math.ceil(remainingArea / packaging.tileAreaSqm);
 
   return {
@@ -36,6 +39,20 @@ export const calculateTileQuantity = (
     remainingArea,
     remainingPieces,
     totalPieces: completeBoxes * packaging.piecesPerBox + remainingPieces,
-    purchasedArea: boxArea + remainingPieces * packaging.tileAreaSqm,
+    purchasedArea: roundArea(boxArea + remainingPieces * packaging.tileAreaSqm),
   };
+};
+
+/**
+ * The inverse conversion, for stock already on hand rather than stock to buy:
+ * floors instead of `calculateTileQuantity`'s ceiling, since you can't
+ * physically hold a partial piece — a sliver of area smaller than one tile
+ * just isn't a whole piece yet, not something to round up and count.
+ */
+export const piecesFromAreaSqm = (areaSqm: number, packaging: TilePackaging) => {
+  const area = Math.max(0, Number.isFinite(areaSqm) ? areaSqm : 0);
+  const totalPieces = Math.floor(area / packaging.tileAreaSqm);
+  const completeBoxes = Math.floor(totalPieces / packaging.piecesPerBox);
+  const remainingPieces = totalPieces - completeBoxes * packaging.piecesPerBox;
+  return { totalPieces, completeBoxes, remainingPieces };
 };

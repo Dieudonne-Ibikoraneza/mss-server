@@ -10,6 +10,7 @@ import {
 import { PrismaService } from '@/prisma/prisma.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { AnalyticsPeriod, bucketize, resolvePeriod } from '@/common/utils/analytics-period';
+import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import { QueryAnalyticsDto, QueryAnalyticsTableDto } from './dto/query-analytics.dto';
 
 const JOURNEY_ORDER: JourneyStage[] = [
@@ -47,7 +48,8 @@ export class AnalyticsService {
       totalCustomers,
       repeatCustomers,
       recommendations,
-      inventories,
+      products,
+      lowStockThreshold,
       funnel,
     ] = await Promise.all([
       this.prisma.order.findMany({
@@ -72,9 +74,11 @@ export class AnalyticsService {
       this.prisma.recommendation.findMany({
         select: { decision: true, purchased: true, matchScore: true },
       }),
-      this.prisma.inventory.findMany({
-        where: { product: { isActive: true } },
+      this.prisma.product.findMany({
+        where: { isActive: true },
+        select: { quantityOnHandSqm: true, averageCostPrice: true },
       }),
+      getLowStockThreshold(this.prisma),
       this.conversionFunnel(),
     ]);
 
@@ -96,14 +100,15 @@ export class AnalyticsService {
         ? recommendations.reduce((sum, row) => sum + Number(row.matchScore), 0) /
           recommendations.length
         : 0,
-      activeProducts: inventories.length,
-      lowStockItems: inventories.filter(
-        (row) => row.quantityOnHand > 0 && row.quantityOnHand <= row.lowStockThreshold,
-      ).length,
-      outOfStockItems: inventories.filter((row) => row.quantityOnHand === 0).length,
+      activeProducts: products.length,
+      lowStockItems: products.filter((row) => {
+        const onHand = Number(row.quantityOnHandSqm);
+        return onHand > 0 && onHand <= lowStockThreshold;
+      }).length,
+      outOfStockItems: products.filter((row) => Number(row.quantityOnHandSqm) === 0).length,
       // Valued at cost (average purchase price), never at the selling price.
-      totalInventoryValue: inventories.reduce(
-        (total, row) => total + row.quantityOnHand * Number(row.averageCostPrice),
+      totalInventoryValue: products.reduce(
+        (total, row) => total + Number(row.quantityOnHandSqm) * Number(row.averageCostPrice),
         0,
       ),
       revenueTrend: bucketize(
@@ -262,16 +267,17 @@ export class AnalyticsService {
         : {}),
     };
 
-    const [products, total, events] = await Promise.all([
+    const [products, total, events, lowStockThreshold] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { inventory: true, collection: { select: { title: true, size: true } } },
+        include: { collection: { select: { title: true, size: true } } },
         skip: query.skip,
         take: query.limit,
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.product.count({ where }),
       this.prisma.tileEvent.groupBy({ by: ['productId', 'type'], _count: { _all: true } }),
+      getLowStockThreshold(this.prisma),
     ]);
 
     const countOf = (productId: string, type: TileEventType) =>
@@ -289,8 +295,8 @@ export class AnalyticsService {
         image: product.image,
         collection: product.collection.title,
         size: product.collection.size,
-        quantityOnHand: product.inventory?.quantityOnHand ?? 0,
-        lowStockThreshold: product.inventory?.lowStockThreshold ?? 20,
+        quantityOnHandSqm: Number(product.quantityOnHandSqm),
+        stockStatus: stockStatusOf(Number(product.quantityOnHandSqm), lowStockThreshold),
         viewed,
         applied,
         compared: countOf(product.id, TileEventType.COMPARED),
@@ -499,10 +505,10 @@ export class AnalyticsService {
         : {}),
     };
 
-    const [products, total, grouped] = await Promise.all([
+    const [products, total, grouped, lowStockThreshold] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { inventory: true, collection: { select: { title: true, size: true } } },
+        include: { collection: { select: { title: true, size: true } } },
         skip: query.skip,
         take: query.limit,
         orderBy: { createdAt: 'desc' },
@@ -513,6 +519,7 @@ export class AnalyticsService {
         _count: { _all: true },
         _avg: { matchScore: true },
       }),
+      getLowStockThreshold(this.prisma),
     ]);
 
     const rows = products.map((product) => {
@@ -528,8 +535,8 @@ export class AnalyticsService {
         image: product.image,
         collection: product.collection.title,
         size: product.collection.size,
-        quantityOnHand: product.inventory?.quantityOnHand ?? 0,
-        lowStockThreshold: product.inventory?.lowStockThreshold ?? 20,
+        quantityOnHandSqm: Number(product.quantityOnHandSqm),
+        stockStatus: stockStatusOf(Number(product.quantityOnHandSqm), lowStockThreshold),
         displayed,
         accepted,
         acceptanceRate: percent(accepted, displayed),

@@ -22,7 +22,7 @@ export class CalculatorService {
 
     const product = await this.prisma.product.findUnique({
       where: { id: dto.productId },
-      include: { inventory: true, collection: true },
+      include: { collection: true },
     });
     if (!product) throw new NotFoundException('Product not found.');
 
@@ -35,15 +35,18 @@ export class CalculatorService {
       piecesPerBox: product.piecesPerBox,
     });
 
-    const available = Math.max(
-      0,
-      (product.inventory?.quantityOnHand ?? 0) - (product.inventory?.reservedQuantity ?? 0),
+    // Stock is held in m²; convert to pieces here only to split this specific
+    // request between what's on hand and what needs sourcing — never stored
+    // that way.
+    const tileAreaSqm = Number(product.collection.tileAreaSqm);
+    const availablePieces = Math.floor(
+      Math.max(0, Number(product.quantityOnHandSqm)) / tileAreaSqm,
     );
-    const fromStockPieces = Math.min(available, quantity.totalPieces);
+    const fromStockPieces = Math.min(availablePieces, quantity.totalPieces);
     const toSourcePieces = quantity.totalPieces - fromStockPieces;
 
-    const unitPricePerPiece = Number(product.price) / product.piecesPerBox;
-    const estimatedCost = quantity.totalPieces * unitPricePerPiece;
+    // Priced by area, not by the box — see `orders.service.ts#create`.
+    const estimatedCost = quantity.purchasedArea * Number(product.price);
 
     return {
       baseAreaSqm: baseArea,

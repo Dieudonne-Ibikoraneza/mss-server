@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { CreateRoomDto } from './dto/create-room.dto';
@@ -22,6 +28,31 @@ export class RoomsService {
   async saveDesign(userId: string, dto: SaveRoomDesignDto) {
     const room = await this.prisma.room.findUnique({ where: { id: dto.roomId } });
     if (!room) throw new NotFoundException('Room not found.');
+
+    // One product per surface — a design can't apply two different floor
+    // tiles at once, so a duplicate surface in the payload is a client bug.
+    const surfaces = new Set(dto.tiles.map((tile) => tile.surface));
+    if (surfaces.size !== dto.tiles.length) {
+      throw new BadRequestException('Each surface (FLOOR, WALL) can only be applied once.');
+    }
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: dto.tiles.map((tile) => tile.productId) } },
+      select: { id: true, name: true, suitableFor: true },
+    });
+    for (const tile of dto.tiles) {
+      const product = products.find((p) => p.id === tile.productId);
+      if (!product) {
+        throw new BadRequestException(`Product ${tile.productId} could not be found.`);
+      }
+      // BOTH-rated products go on either surface; FLOOR/WALL-only products
+      // can only be placed where they're actually rated for.
+      if (product.suitableFor !== SuitableFor.BOTH && product.suitableFor !== tile.surface) {
+        throw new BadRequestException(
+          `"${product.name}" is a ${product.suitableFor.toLowerCase()} tile and can't be placed on the ${tile.surface.toLowerCase()}.`,
+        );
+      }
+    }
 
     const design = await this.prisma.roomDesign.create({
       data: {

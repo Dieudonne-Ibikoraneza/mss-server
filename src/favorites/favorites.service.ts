@@ -18,6 +18,9 @@ export class FavoritesService {
   }
 
   async add(userId: string, productId: string, sessionId: string) {
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    if (!product) throw new NotFoundException('Product not found.');
+
     const exists = await this.prisma.favorite.findUnique({
       where: { userId_productId: { userId, productId } },
     });

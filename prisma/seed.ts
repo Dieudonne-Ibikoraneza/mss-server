@@ -26,6 +26,35 @@ async function main() {
   });
   console.log(`Admin user ready: ${admin.email} — sign in via OTP (POST /auth/otp/request).`);
 
+  // --- Test accounts, one per role -----------------------------------------
+  // Dev/staging only: paired with `otp.devBypassCode` (see configuration.ts),
+  // so any of these can sign in with the fixed "1234" code — no real email or
+  // SMS delivery needed. Never seeded against a production database.
+  const testAccounts: { fullName: string; email: string; phone: string; role: Role }[] = [
+    { fullName: 'Dieudonne Ibikoraneza', email: 'dieudonne.ibikoraneza@gmail.com', phone: '+250780000001', role: Role.CLIENT },
+    { fullName: 'Magnificat Sales', email: 'sales@magnificatsmartspace.rw', phone: '+250780000002', role: Role.SALES_PERSON },
+    { fullName: 'Magnificat Stock', email: 'stock@magnificatsmartspace.rw', phone: '+250780000003', role: Role.STOCK_MANAGER },
+    { fullName: 'Magnificat Analyst', email: 'analyst@magnificatsmartspace.rw', phone: '+250780000004', role: Role.DATA_ANALYST },
+  ];
+
+  for (const account of testAccounts) {
+    await prisma.user.upsert({
+      where: { email: account.email },
+      update: {},
+      create: {
+        fullName: account.fullName,
+        email: account.email,
+        phone: account.phone,
+        role: account.role,
+        emailVerifiedAt: new Date(),
+        phoneVerifiedAt: new Date(),
+      },
+    });
+  }
+  console.log(
+    `Test accounts ready (OTP "1234" in non-production): ${testAccounts.map((a) => `${a.role} → ${a.email}`).join(', ')}.`,
+  );
+
   // Titles, copy and imagery match the storefront's collection cards.
   const collections = await Promise.all(
     [
@@ -119,10 +148,9 @@ async function main() {
         'Pre-cut polished granite step tiles with a bullnose edge. Ideal for creating stunning spaces.',
       suitableFor: SuitableFor.BOTH,
       roomTypes: [RoomType.LIVING_ROOM, RoomType.KITCHEN],
-      // Cost ~14,000/box (7 pcs) → 2,000/piece average cost, vs. 22,000/box selling price.
-      inventory: {
-        create: { quantityOnHand: 500, lowStockThreshold: 50, averageCostPrice: 2000 },
-      },
+      // Cost ~14,000/box (7 pcs, 1.75 m²/box) → 8,000/m² average cost, vs. 22,000/m² selling price.
+      quantityOnHandSqm: 125, // 500 pcs * 0.25 m²/pc
+      averageCostPrice: 8000,
     },
   });
 
@@ -143,10 +171,9 @@ async function main() {
         'Warm wood-inspired finish, versatile rectangular tiles for bathrooms, kitchens and feature walls.',
       suitableFor: SuitableFor.FLOOR,
       roomTypes: [RoomType.LIVING_ROOM, RoomType.OUTDOOR],
-      // Cost ~9,500/box (15 pcs) → 633.33/piece average cost, vs. 15,000/box selling price.
-      inventory: {
-        create: { quantityOnHand: 15, lowStockThreshold: 20, averageCostPrice: 633.33 },
-      },
+      // Cost ~9,500/box (15 pcs, 1.5 m²/box) → 6,333.33/m² average cost, vs. 15,000/m² selling price.
+      quantityOnHandSqm: 1.5, // 15 pcs * 0.1 m²/pc
+      averageCostPrice: 6333.33,
     },
   });
 
@@ -167,10 +194,9 @@ async function main() {
       description: 'Same 25×40cm size as the standard pack, sourced in 16-piece boxes.',
       suitableFor: SuitableFor.FLOOR,
       roomTypes: [RoomType.LIVING_ROOM, RoomType.OUTDOOR],
-      // Cost ~9,800/box (16 pcs) → 612.5/piece average cost, vs. 15,400/box selling price.
-      inventory: {
-        create: { quantityOnHand: 40, lowStockThreshold: 20, averageCostPrice: 612.5 },
-      },
+      // Cost ~9,800/box (16 pcs, 1.6 m²/box) → 6,125/m² average cost, vs. 15,400/m² selling price.
+      quantityOnHandSqm: 4, // 40 pcs * 0.1 m²/pc
+      averageCostPrice: 6125,
     },
   });
 

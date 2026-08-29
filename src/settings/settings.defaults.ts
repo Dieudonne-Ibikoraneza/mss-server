@@ -1,4 +1,5 @@
 import { LOW_STOCK_ALERTS_SETTING } from '@/notifications/notifications.service';
+import { LOW_STOCK_THRESHOLD_SETTING } from '@/common/utils/stock-status';
 
 /**
  * Every platform setting the app knows about, with the value it falls back to
@@ -16,6 +17,8 @@ export const SETTINGS_DEFAULTS = {
   'platform.version': '1.0.0',
 
   [LOW_STOCK_ALERTS_SETTING]: true,
+  /** One threshold, shared by every product — not settable per product. */
+  [LOW_STOCK_THRESHOLD_SETTING]: 20,
   'notifications.orderUpdates': true,
   'notifications.systemNotifications': true,
 

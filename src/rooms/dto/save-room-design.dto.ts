@@ -1,8 +1,10 @@
+import { RoomSurface } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsOptional,
   IsString,
   IsUUID,
@@ -11,8 +13,9 @@ import {
 } from 'class-validator';
 
 export class RoomDesignTileInputDto {
-  @IsString()
-  surface: string;
+  /** Which physical surface this product was placed on — FLOOR or WALL, never BOTH (that's a product's own eligibility, not a placement). */
+  @IsEnum(RoomSurface)
+  surface: RoomSurface;
 
   @IsUUID()
   productId: string;

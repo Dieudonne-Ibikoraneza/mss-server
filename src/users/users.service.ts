@@ -1,10 +1,17 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { OrderStatus, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
+import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto, QueryCustomersDto } from './dto/query-users.dto';
 
 const SAFE_USER_SELECT = {
@@ -115,6 +122,13 @@ export class UsersService {
   }
 
   async createStaff(dto: CreateStaffDto) {
+    const existing = await this.prisma.user.findFirst({
+      where: { OR: [{ email: dto.email }, { phone: dto.phone }] },
+    });
+    if (existing) {
+      throw new ConflictException('An account with this email or phone already exists.');
+    }
+
     const staff = await this.prisma.user.create({
       data: {
         fullName: dto.fullName,
@@ -143,8 +157,32 @@ export class UsersService {
     return staff;
   }
 
-  async setStaffStatus(id: string, status: 'ACTIVE' | 'INACTIVE') {
-    await this.findById(id);
+  /** Shared existence + role guard for the staff-only mutations below. */
+  private async findStaffById(id: string) {
+    const staff = await this.prisma.user.findFirst({
+      where: { id, role: { in: STAFF_ROLES } },
+      select: SAFE_USER_SELECT,
+    });
+    if (!staff) throw new NotFoundException('Staff member not found.');
+    return staff;
+  }
+
+  async updateStaff(id: string, dto: UpdateStaffDto) {
+    await this.findStaffById(id);
+    if (dto.phone) {
+      const existing = await this.prisma.user.findFirst({
+        where: { phone: dto.phone, id: { not: id } },
+      });
+      if (existing) throw new ConflictException('Another account already uses this phone number.');
+    }
+    return this.prisma.user.update({ where: { id }, data: dto, select: SAFE_USER_SELECT });
+  }
+
+  async setStaffStatus(id: string, status: 'ACTIVE' | 'INACTIVE', currentUserId: string) {
+    if (id === currentUserId && status === 'INACTIVE') {
+      throw new BadRequestException('You cannot deactivate your own account.');
+    }
+    await this.findStaffById(id);
     return this.prisma.user.update({ where: { id }, data: { status }, select: SAFE_USER_SELECT });
   }
 

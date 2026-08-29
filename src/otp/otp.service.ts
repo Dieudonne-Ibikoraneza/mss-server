@@ -1,4 +1,4 @@
-import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Language } from '@prisma/client';
 import * as crypto from 'crypto';
@@ -21,10 +21,13 @@ interface OtpRecord {
  */
 @Injectable()
 export class OtpService {
+  private readonly logger = new Logger(OtpService.name);
   private readonly length: number;
   private readonly ttlSeconds: number;
   private readonly maxAttempts: number;
   private readonly resendCooldownSeconds: number;
+  /** Non-production only — see `otp.devBypassCode` in configuration.ts. */
+  private readonly devBypassCode: string | undefined;
 
   constructor(
     private readonly redis: RedisService,
@@ -35,6 +38,10 @@ export class OtpService {
     this.ttlSeconds = config.get<number>('otp.ttlSeconds') ?? 300;
     this.maxAttempts = config.get<number>('otp.maxAttempts') ?? 5;
     this.resendCooldownSeconds = config.get<number>('otp.resendCooldownSeconds') ?? 60;
+
+    const isProduction = config.get<string>('app.env') === 'production';
+    const bypassCode = config.get<string>('otp.devBypassCode');
+    this.devBypassCode = !isProduction && bypassCode ? bypassCode : undefined;
   }
 
   private codeKey(destination: string, purpose: OtpPurpose) {
@@ -74,7 +81,13 @@ export class OtpService {
     await this.redis.set(this.codeKey(destination, purpose), record, this.ttlSeconds);
     await this.redis.set(this.cooldownKey(destination, purpose), '1', this.resendCooldownSeconds);
 
-    if (channel === 'email') {
+    if (this.devBypassCode) {
+      // Dev bypass is on — skip the real send entirely (no SMTP/SMS calls,
+      // no waiting on a provider) since `devBypassCode` logs anyone in anyway.
+      this.logger.log(
+        `OTP for ${destination} (${purpose}): ${code} — dev bypass "${this.devBypassCode}" also works.`,
+      );
+    } else if (channel === 'email') {
       await this.notifications.sendOtpEmail(destination, code, language, this.ttlSeconds);
     } else {
       await this.notifications.sendOtpSms(destination, code, language);
@@ -89,6 +102,13 @@ export class OtpService {
   }
 
   async verify(destination: string, purpose: OtpPurpose, code: string): Promise<boolean> {
+    // Dev-only bypass: always accepts `devBypassCode`, real code or not, so
+    // login/register can be exercised without a working email/SMS provider.
+    if (this.devBypassCode && code === this.devBypassCode) {
+      await this.redis.del(this.codeKey(destination, purpose));
+      return true;
+    }
+
     const key = this.codeKey(destination, purpose);
     const record = await this.redis.get<OtpRecord>(key);
     if (!record) {

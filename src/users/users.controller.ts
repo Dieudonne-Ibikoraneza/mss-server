@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
+import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryCustomersDto, QueryStaffDto } from './dto/query-users.dto';
 
 @ApiTags('users')
@@ -78,9 +79,20 @@ export class UsersController {
   }
 
   @Roles(Role.ADMIN)
+  @ApiOperation({ summary: "Edit a staff account's name, phone or role (admin only)" })
+  @Patch('staff/:id')
+  updateStaff(@Param('id') id: string, @Body() dto: UpdateStaffDto) {
+    return this.usersService.updateStaff(id, dto);
+  }
+
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Activate/deactivate a staff account (admin only)' })
   @Patch('staff/:id/status')
-  setStaffStatus(@Param('id') id: string, @Body('status') status: 'ACTIVE' | 'INACTIVE') {
-    return this.usersService.setStaffStatus(id, status);
+  setStaffStatus(
+    @Param('id') id: string,
+    @Body('status') status: 'ACTIVE' | 'INACTIVE',
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.usersService.setStaffStatus(id, status, user.id);
   }
 }

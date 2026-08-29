@@ -33,7 +33,7 @@ export class CreateProductDto {
   @IsPositive()
   piecesPerBox: number;
 
-  /** Selling price per box — what the client is shown and pays. */
+  /** Selling price per square metre (m²) — what the client is shown and pays. */
   @IsNumber()
   @IsPositive()
   price: number;
@@ -54,24 +54,20 @@ export class CreateProductDto {
   @IsEnum(RoomType, { each: true })
   roomTypes: RoomType[];
 
+  /** Opening stock in square metres — boxes/pieces are a display conversion only. */
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
-  initialQuantity?: number;
+  initialAreaSqm?: number;
 
   /**
-   * What we paid per box for the initial stock (what feeds the average cost
-   * used for inventory valuation — never shown to clients). Required when
-   * `initialQuantity` is greater than 0, since there's no prior average to
-   * fall back on; ignored/omit when there's no opening stock yet.
+   * What we paid per square metre for the initial stock (what feeds the
+   * average cost used for inventory valuation — never shown to clients).
+   * Required when `initialAreaSqm` is greater than 0, since there's no prior
+   * average to fall back on; ignored/omit when there's no opening stock yet.
    */
-  @ValidateIf((dto: CreateProductDto) => (dto.initialQuantity ?? 0) > 0)
+  @ValidateIf((dto: CreateProductDto) => (dto.initialAreaSqm ?? 0) > 0)
   @IsNumber()
   @IsPositive()
   initialCostPrice?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  lowStockThreshold?: number;
 }

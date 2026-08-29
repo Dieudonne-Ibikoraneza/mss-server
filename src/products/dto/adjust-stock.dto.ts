@@ -1,7 +1,6 @@
 import { StockMovementType } from '@prisma/client';
 import {
   IsEnum,
-  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -11,14 +10,18 @@ import {
 } from 'class-validator';
 
 export class AdjustStockDto {
-  /** Signed change in pieces: positive to add stock, negative to remove it. */
-  @IsInt()
-  changeQty: number;
+  /**
+   * Signed change in square metres: positive to add stock, negative to
+   * remove it. Boxes/pieces are only ever a conversion for display —
+   * adjustments are always entered and stored in m².
+   */
+  @IsNumber()
+  changeAreaSqm: number;
 
   /**
    * How the stock moved, for the movement report. Defaults from the sign of
-   * `changeQty` when omitted: stock coming in is INBOUND, stock going out is
-   * OUTBOUND. Send ADJUSTMENT explicitly for corrections (recount, damage).
+   * `changeAreaSqm` when omitted: stock coming in is INBOUND, stock going out
+   * is OUTBOUND. Send ADJUSTMENT explicitly for corrections (recount, damage).
    */
   @IsOptional()
   @IsEnum(StockMovementType)
@@ -35,10 +38,11 @@ export class AdjustStockDto {
   reason: string;
 
   /**
-   * What we paid per box for this incoming batch. Only meaningful when stock
-   * is coming in (`changeQty` > 0) — feeds the moving weighted-average cost
-   * used for inventory valuation. Omit for outbound movements or corrections
-   * with no known cost; the average is left untouched when omitted.
+   * What we paid per square metre for this incoming batch. Only meaningful
+   * when stock is coming in (`changeAreaSqm` > 0) — feeds the moving
+   * weighted-average cost used for inventory valuation. Omit for outbound
+   * movements or corrections with no known cost; the average is left
+   * untouched when omitted.
    */
   @IsOptional()
   @IsNumber()

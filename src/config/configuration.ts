@@ -25,6 +25,12 @@ export default () => ({
     ttlSeconds: parseInt(process.env.OTP_TTL_SECONDS ?? '300', 10),
     maxAttempts: parseInt(process.env.OTP_MAX_ATTEMPTS ?? '5', 10),
     resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60', 10),
+    /**
+     * Non-production only: this code always verifies for any destination, so
+     * register/login can be tested end-to-end without a working email/SMS
+     * provider. Set to an empty string to disable even in dev.
+     */
+    devBypassCode: process.env.OTP_DEV_BYPASS_CODE ?? '1234',
   },
   throttle: {
     ttlMs: parseInt(process.env.THROTTLE_TTL_MS ?? '60000', 10),

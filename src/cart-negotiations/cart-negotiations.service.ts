@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import { OrderMessageAuthor, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { PaginationDto, paginate } from '@/common/dto/pagination.dto';
+import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { CreateCartNegotiationDto } from './dto/create-cart-negotiation.dto';
 import { CreateCartNegotiationMessageDto } from './dto/create-cart-negotiation-message.dto';
@@ -25,7 +26,10 @@ const DETAIL_INCLUDE = {
  */
 @Injectable()
 export class CartNegotiationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly negotiations: NegotiationsGateway,
+  ) {}
 
   private isStaff(role: Role) {
     return STAFF_ROLES.includes(role) || role === Role.DATA_ANALYST;
@@ -94,10 +98,16 @@ export class CartNegotiationsService {
       }),
     ]);
 
-    return this.prisma.cartNegotiation.findUniqueOrThrow({
+    const negotiation = await this.prisma.cartNegotiation.findUniqueOrThrow({
       where: { id: negotiationId },
       include: DETAIL_INCLUDE,
     });
+    // Push the tail of the thread (system note + the customer's own message)
+    // so a stock manager already watching the inbox sees it appear live.
+    for (const message of negotiation.messages.slice(-2)) {
+      this.negotiations.emitMessage('cart', negotiationId, message);
+    }
+    return negotiation;
   }
 
   /** The calling customer's own thread, or `null` if they've never had one. */
@@ -149,6 +159,7 @@ export class CartNegotiationsService {
       this.prisma.cartNegotiation.update({ where: { id }, data: { updatedAt: new Date() } }),
     ]);
 
+    this.negotiations.emitMessage('cart', id, message);
     return message;
   }
 }

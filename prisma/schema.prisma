@@ -45,6 +45,14 @@ enum SuitableFor {
   BOTH
 }
 
+/// Where a tile was actually placed in a saved room design — unlike
+/// `SuitableFor` (a product's own eligibility, which can be BOTH), a single
+/// placement is always one physical surface.
+enum RoomSurface {
+  FLOOR
+  WALL
+}
+
 enum RoomType {
   LIVING_ROOM
   BEDROOM
@@ -250,9 +258,10 @@ model Product {
   collection     Collection  @relation(fields: [collectionId], references: [id])
   boxCoverageSqm Decimal     @db.Decimal(10, 4)
   piecesPerBox   Int
-  /// Selling price per box — what the client is shown and pays. Not the cost
-  /// price; that lives on `Inventory.averageCostPrice` since it's a moving
-  /// average across purchase batches, not a single fixed value.
+  /// Selling price per square metre (m²) — what staff enter and what the
+  /// client is shown and pays; the storefront prices and sells by area, not
+  /// by the box. Not the cost price; that lives on `averageCostPrice` below
+  /// since it's a moving average across purchase batches, not a single fixed value.
   price          Decimal     @db.Decimal(12, 2)
   currency       String      @default("RWF")
   /// Single product image (the catalog shows exactly one image per product).
@@ -264,7 +273,21 @@ model Product {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  inventory        Inventory?
+  // --- Inventory (folded directly into the product — no separate table) ---
+  /// Stock is held and moved in square metres — the same unit it's priced and
+  /// sold in — not boxes or pieces. Boxes/pieces are purely a display
+  /// conversion (via `calculateTileQuantity`), never the stored quantity.
+  quantityOnHandSqm Decimal @default(0) @db.Decimal(12, 4)
+  /// Moving weighted-average cost PER SQUARE METRE (what we paid, not the
+  /// selling price) across every batch received. Recomputed on each stock-in
+  /// that reports a cost: (oldAvgCost*oldQtySqm + newCost*newQtySqm) /
+  /// (oldQtySqm+newQtySqm). This is what inventory valuation is priced at,
+  /// never the selling price.
+  averageCostPrice Decimal @default(0) @db.Decimal(12, 4)
+  // Low-stock threshold is a single GLOBAL number (PlatformSetting
+  // "stock.lowStockThreshold"), not a per-product field — see
+  // `getLowStockThreshold()` in common/utils/stock-status.ts.
+
   stockAdjustments StockAdjustment[]
   cartItems        CartItem[]
   orderItems       OrderItem[]
@@ -276,38 +299,24 @@ model Product {
   @@index([collectionId])
 }
 
-model Inventory {
-  id                String   @id @default(uuid())
-  productId         String   @unique
-  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  quantityOnHand    Int      @default(0)
-  reservedQuantity  Int      @default(0)
-  /// Moving weighted-average cost PER PIECE (what we paid, not the selling
-  /// price) across every batch received. Recomputed on each stock-in that
-  /// reports a cost: (oldAvgCost*oldQty + newCost*newQty) / (oldQty+newQty).
-  /// This is what inventory valuation is priced at, never the selling price.
-  averageCostPrice  Decimal  @default(0) @db.Decimal(12, 4)
-  lowStockThreshold Int      @default(20)
-  updatedAt         DateTime @updatedAt
-}
-
 /// Every change to on-hand stock, whatever caused it — the single feed behind
 /// the stock manager's movement report (3.11 "Generate stock reports").
 model StockAdjustment {
   id               String            @id @default(uuid())
   productId        String
   product          Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
-  /// Signed change in pieces: positive for stock coming in, negative for stock going out.
-  changeQty        Int
+  /// Signed change in square metres: positive for stock coming in, negative
+  /// for stock going out. Boxes/pieces are a conversion for display only.
+  changeAreaSqm    Decimal           @db.Decimal(12, 4)
   type             StockMovementType @default(ADJUSTMENT)
   /// Document this movement traces back to, e.g. a purchase order or an order number.
   reference        String?
   reason           String
-  /// What we paid per box for THIS batch. Only set for stock coming in with a
-  /// known cost — outbound movements and corrections with no known cost leave
-  /// this null and don't touch the running average.
+  /// What we paid per square metre for THIS batch. Only set for stock coming
+  /// in with a known cost — outbound movements and corrections with no known
+  /// cost leave this null and don't touch the running average.
   costPrice        Decimal?          @db.Decimal(12, 4)
-  /// Snapshot of `Inventory.averageCostPrice` (per piece) right after this
+  /// Snapshot of `Product.averageCostPrice` (per m²) right after this
   /// movement was applied — kept so historical reports don't need to replay
   /// the whole movement feed to know what the average was at the time.
   averageCostAfter Decimal?          @db.Decimal(12, 4)
@@ -587,12 +596,12 @@ model RoomDesign {
 }
 
 model RoomDesignTile {
-  id           String     @id @default(uuid())
+  id           String      @id @default(uuid())
   roomDesignId String
-  roomDesign   RoomDesign @relation(fields: [roomDesignId], references: [id], onDelete: Cascade)
-  surface      String
+  roomDesign   RoomDesign  @relation(fields: [roomDesignId], references: [id], onDelete: Cascade)
+  surface      RoomSurface
   productId    String
-  product      Product    @relation(fields: [productId], references: [id])
+  product      Product     @relation(fields: [productId], references: [id])
 
   @@unique([roomDesignId, surface])
 }

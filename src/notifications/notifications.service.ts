@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createTransport, type Transporter } from 'nodemailer';
 import { Language, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
+import { getLowStockThreshold } from '@/common/utils/stock-status';
 import { escapeHtml, renderTemplate } from './template-renderer';
 
 /** Keys of the `EmailTemplate` rows seeded by prisma/seed.ts — keep in sync with that file. */
@@ -203,11 +204,11 @@ export class NotificationsService implements OnModuleInit {
       });
       if (setting && setting.value === false) return;
 
-      const inventories = await this.prisma.inventory.findMany({
-        where: { productId: { in: productIds } },
-        include: { product: true },
-      });
-      const low = inventories.filter((row) => row.quantityOnHand <= row.lowStockThreshold);
+      const [products, lowStockThreshold] = await Promise.all([
+        this.prisma.product.findMany({ where: { id: { in: productIds } } }),
+        getLowStockThreshold(this.prisma),
+      ]);
+      const low = products.filter((row) => Number(row.quantityOnHandSqm) <= lowStockThreshold);
       if (low.length === 0) return;
 
       const recipients = await this.prisma.user.findMany({
@@ -222,8 +223,8 @@ export class NotificationsService implements OnModuleInit {
 
       const lines = low.map(
         (row) =>
-          `- ${row.product.name} (${row.product.sku}): ${row.quantityOnHand} pieces on hand, ` +
-          `threshold ${row.lowStockThreshold}`,
+          `- ${row.name} (${row.sku}): ${Number(row.quantityOnHandSqm)} m² on hand, ` +
+          `threshold ${lowStockThreshold} m²`,
       );
 
       for (const recipient of recipients) {

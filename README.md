@@ -178,9 +178,8 @@ can't share a cache entry with public ones).
 Every write that could make a cached response stale invalidates it
 immediately, via a `SCAN`-based prefix delete (`RedisService.delByPrefix`) —
 not just create/update/delete on the resource itself, but anything else that
-touches the same data: stock adjustments, and order placement/delivery/
-cancellation (which change `quantityOnHand`/`reservedQuantity`, and therefore
-the cached `stockStatus`).
+touches the same data: stock adjustments, and order delivery (which changes
+`quantityOnHand`, and therefore the cached `stockStatus`).
 
 ## Pagination
 
@@ -193,11 +192,22 @@ response shaped `{ items, meta: { page, limit, total, totalPages } }`):
 
 ## Inventory costing
 
+Inventory is not a separate table — `quantityOnHand` and `averageCostPrice`
+are columns directly on `Product`, alongside its catalog fields. There is no
+stock reservation: placing/cancelling an order never touches `quantityOnHand`,
+only delivering one does (see the order status timeline below); a shortage at
+checkout is a point-in-time read, not a hold on the stock.
+
+The low-stock threshold is **one global number** (`PATCH /settings`,
+`stock.lowStockThreshold`, defaults to 20), not a per-product field — every
+product's `stockStatus` is compared against the same value
+(`getLowStockThreshold()` in `common/utils/stock-status.ts`).
+
 Every product carries two prices with different jobs:
 
 - `Product.price` — the **selling price** per box, shown to clients and used
   everywhere pricing is client-facing (catalog, price calculator, orders).
-- `Inventory.averageCostPrice` — a **moving weighted-average cost per piece**
+- `Product.averageCostPrice` — a **moving weighted-average cost per piece**
   (what we paid), used only for inventory valuation. Never returned to
   clients/public requests — gated behind the same staff-only visibility as
   exact stock counts (`ADMIN`, `STOCK_MANAGER`, `SALES_PERSON`, `DATA_ANALYST`).
@@ -256,10 +266,10 @@ The order-to-payment flow, driven by `Order.quotationStatus`:
 | `users` | Profile, staff management (admin), customer listing |
 | `collections` / `products` | Catalog, client-vs-staff stock visibility, price calculator (3.3). A `Collection` owns the shared tile `size`/`tileAreaSqm`; each `Product` in it only varies by packaging (`piecesPerBox`, `boxCoverageSqm`), price, and image. |
 | `cart` | Per-user cart with live tile-quantity/price calculation |
-| `orders` | Place order / book, staff-created orders, status timeline, inventory reservation, in-system PDF quotation + payment confirmation workflow (3.7) |
+| `orders` | Place order / book, staff-created orders, status timeline (stock only moves on delivery — no reservation), in-system PDF quotation + payment confirmation workflow (3.7) |
 | `payments` | MoMo + card provider abstraction (stubs — wire real credentials in `.env`) |
 | `favorites` | Saved tiles |
-| `rooms` | 3D room templates + saved client designs (shareable with sales) |
+| `rooms` | 3D room templates + saved client designs (shareable with sales). A saved design captures the room (its `type`, e.g. LIVING_ROOM), and one product per surface (`FLOOR`/`WALL`) — a product can only be placed on a surface it's actually rated for (`suitableFor`: FLOOR/WALL/BOTH). |
 | `chatbot` | Conversations, grounded AI recommendations (Gemini), product comparison, image/video preview jobs, knowledge base |
 | `calculator` | Floor plan calculator: dimensions → quantity + wastage + stock/sourced split + cost (3.8) |
 | `quotes` | Quotation requests + negotiation status, feeding the journey funnel |

@@ -28,6 +28,7 @@ import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
+import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
 
@@ -45,9 +46,23 @@ const ORDER_INCLUDE = {
 export interface StockShortage {
   productId: string;
   productName: string;
-  requestedPieces: number;
-  availablePieces: number;
+  requestedAreaSqm: number;
+  availableAreaSqm: number;
 }
+
+/**
+ * The actual area an order line ships, once its `totalPieces` (rounded up to
+ * whole pieces at checkout) is converted back to m² via the product's own
+ * packaging — what actually leaves stock, not the raw `requiredAreaSqm` the
+ * customer typed.
+ */
+const purchasedAreaOf = (item: {
+  totalPieces: number;
+  product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+}) => {
+  const tileAreaSqm = Number(item.product.boxCoverageSqm) / item.product.piecesPerBox;
+  return item.totalPieces * tileAreaSqm;
+};
 
 @Injectable()
 export class OrdersService {
@@ -56,6 +71,7 @@ export class OrdersService {
     private readonly redis: RedisService,
     private readonly events: EventsService,
     private readonly notifications: NotificationsService,
+    private readonly negotiations: NegotiationsGateway,
   ) {}
 
   private generateOrderNumber() {
@@ -85,7 +101,7 @@ export class OrdersService {
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: dto.items.map((item) => item.productId) } },
-      include: { inventory: true, collection: true },
+      include: { collection: true },
     });
     if (products.length !== dto.items.length) {
       throw new BadRequestException('One or more products could not be found.');
@@ -98,8 +114,11 @@ export class OrdersService {
         boxCoverageSqm: Number(product.boxCoverageSqm),
         piecesPerBox: product.piecesPerBox,
       });
-      const unitPrice = Number(product.price) / product.piecesPerBox;
-      const totalPrice = quantity.totalPieces * unitPrice;
+      // Priced by area, not by the box: `unitPrice` is per m², and the total
+      // is billed on `purchasedArea` — the actual area shipped once rounded
+      // up to whole pieces, not the raw requested `areaSqm`.
+      const unitPrice = Number(product.price);
+      const totalPrice = quantity.purchasedArea * unitPrice;
       return { product, quantity, unitPrice, totalPrice };
     });
 
@@ -109,25 +128,27 @@ export class OrdersService {
      * ("Customer negotiates" -> "Customer places an order"), and the storefront
      * lets them do exactly that. We record what is short so the order opens with
      * a negotiation thread instead of failing at checkout.
+     *
+     * Stock isn't reserved on placement — `quantityOnHandSqm` only moves when
+     * the order is actually delivered (see `updateStatus` below) — so this
+     * check is a point-in-time read, not a hold.
      */
     const shortages: StockShortage[] = [];
     for (const line of lineItems) {
-      const onHand = line.product.inventory?.quantityOnHand ?? 0;
-      const reserved = line.product.inventory?.reservedQuantity ?? 0;
-      const availablePieces = Math.max(0, onHand - reserved);
-      if (line.quantity.totalPieces > availablePieces) {
+      const availableAreaSqm = Number(line.product.quantityOnHandSqm);
+      if (line.quantity.purchasedArea > availableAreaSqm) {
         shortages.push({
           productId: line.product.id,
           productName: line.product.name,
-          requestedPieces: line.quantity.totalPieces,
-          availablePieces,
+          requestedAreaSqm: line.quantity.purchasedArea,
+          availableAreaSqm,
         });
       }
     }
 
     const subtotal = lineItems.reduce((sum, line) => sum + line.totalPrice, 0);
 
-    const order = await this.prisma.$transaction(async (tx) => {
+    const { order, systemMessage } = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
           orderNumber: this.generateOrderNumber(),
@@ -162,28 +183,26 @@ export class OrdersService {
         include: { items: true },
       });
 
-      for (const line of lineItems) {
-        await tx.inventory.update({
-          where: { productId: line.product.id },
-          data: { reservedQuantity: { increment: line.quantity.totalPieces } },
-        });
-      }
+      const message =
+        shortages.length > 0
+          ? await tx.orderMessage.create({
+              data: {
+                orderId: created.id,
+                author: OrderMessageAuthor.SYSTEM,
+                body:
+                  'Part of this order exceeds what is currently on hand. ' +
+                  'Our stock team will confirm what can be released now and when the rest can follow.',
+                metadata: { shortages } as unknown as Prisma.InputJsonValue,
+              },
+            })
+          : null;
 
-      if (shortages.length > 0) {
-        await tx.orderMessage.create({
-          data: {
-            orderId: created.id,
-            author: OrderMessageAuthor.SYSTEM,
-            body:
-              'Part of this order exceeds what is currently on hand. ' +
-              'Our stock team will confirm what can be released now and when the rest can follow.',
-            metadata: { shortages } as unknown as Prisma.InputJsonValue,
-          },
-        });
-      }
-
-      return created;
+      return { order: created, systemMessage: message };
     });
+
+    // Fired after the transaction commits — a socket push for a message
+    // that then rolled back would be worse than no push at all.
+    if (systemMessage) this.negotiations.emitMessage('order', order.id, systemMessage);
 
     await invalidateProductsCache(
       this.redis,
@@ -244,19 +263,20 @@ export class OrdersService {
   async updateStatus(id: string, dto: UpdateOrderStatusDto, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { items: { include: { product: { include: { inventory: true } } } } },
+      include: { items: { include: { product: true } } },
     });
     if (!order) throw new NotFoundException('Order not found.');
 
     if (dto.status === OrderStatus.DELIVERED) {
       // Delivering means the goods physically left the warehouse, so on-hand must cover them.
+      // Stock is never reserved on placement, so this is the first hard check against it.
       const short = order.items.find(
-        (item) => item.totalPieces > (item.product.inventory?.quantityOnHand ?? 0),
+        (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
       );
       if (short) {
         throw new BadRequestException(
-          `Cannot mark delivered: "${short.product.name}" needs ${short.totalPieces} pieces but only ` +
-            `${short.product.inventory?.quantityOnHand ?? 0} are on hand. Restock or adjust the order first.`,
+          `Cannot mark delivered: "${short.product.name}" needs ${purchasedAreaOf(short)} m² but only ` +
+            `${Number(short.product.quantityOnHandSqm)} m² are on hand. Restock or adjust the order first.`,
         );
       }
     }
@@ -275,18 +295,16 @@ export class OrdersService {
 
       if (dto.status === OrderStatus.DELIVERED) {
         for (const item of order.items) {
-          await tx.inventory.update({
-            where: { productId: item.productId },
-            data: {
-              quantityOnHand: { decrement: item.totalPieces },
-              reservedQuantity: { decrement: item.totalPieces },
-            },
+          const areaSqm = purchasedAreaOf(item);
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { quantityOnHandSqm: { decrement: areaSqm } },
           });
           // Leaves a trace in the movement feed the stock report reads from.
           await tx.stockAdjustment.create({
             data: {
               productId: item.productId,
-              changeQty: -item.totalPieces,
+              changeAreaSqm: -areaSqm,
               type: StockMovementType.OUTBOUND,
               reference: order.orderNumber,
               reason: 'Order delivered',
@@ -307,26 +325,17 @@ export class OrdersService {
         });
       }
 
-      if (dto.status === OrderStatus.CANCELLED) {
-        for (const item of order.items) {
-          await tx.inventory.update({
-            where: { productId: item.productId },
-            data: { reservedQuantity: { decrement: item.totalPieces } },
-          });
-        }
-      }
+      // CANCELLED has no stock side effect: nothing was ever reserved on
+      // placement, so there is nothing to release back.
 
       return updated;
     });
 
-    if (dto.status === OrderStatus.DELIVERED || dto.status === OrderStatus.CANCELLED) {
+    if (dto.status === OrderStatus.DELIVERED) {
       await invalidateProductsCache(
         this.redis,
         order.items.map((item) => item.productId),
       );
-    }
-
-    if (dto.status === OrderStatus.DELIVERED) {
       await this.notifications.notifyLowStock(order.items.map((item) => item.productId));
     }
 
@@ -493,9 +502,11 @@ export class OrdersService {
       ? OrderMessageAuthor.STAFF
       : OrderMessageAuthor.CUSTOMER;
 
-    return this.prisma.orderMessage.create({
+    const message = await this.prisma.orderMessage.create({
       data: { orderId: id, author, senderId: actingUser.id, body: dto.body },
       include: { sender: { select: { id: true, fullName: true, role: true } } },
     });
+    this.negotiations.emitMessage('order', id, message);
+    return message;
   }
 }

@@ -29,13 +29,14 @@ export class QuotesService {
         boxCoverageSqm: Number(product.boxCoverageSqm),
         piecesPerBox: product.piecesPerBox,
       });
-      const unitPrice = Number(product.price) / product.piecesPerBox;
+      // Priced by area, not by the box — see `orders.service.ts#create`.
+      const unitPrice = Number(product.price);
       return {
         productId: product.id,
         name: product.name,
         ...quantity,
         unitPrice,
-        totalPrice: quantity.totalPieces * unitPrice,
+        totalPrice: quantity.purchasedArea * unitPrice,
       };
     });
 

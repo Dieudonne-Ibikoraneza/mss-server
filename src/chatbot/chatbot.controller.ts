@@ -5,6 +5,7 @@ import { Role } from '@prisma/client';
 import { Public } from '@/common/decorators/public.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { ChatbotService } from './chatbot.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
@@ -38,8 +39,8 @@ export class ChatbotController {
   @Public()
   @ApiOperation({ summary: 'Compare products via the assistant' })
   @Post('compare')
-  compareProducts(@Body() dto: CompareProductsDto, @CurrentUser('id') userId?: string) {
-    return this.chatbotService.compareProducts(dto, userId);
+  compareProducts(@Body() dto: CompareProductsDto, @CurrentUser() user?: AuthenticatedUser) {
+    return this.chatbotService.compareProducts(dto, user?.id, user?.role);
   }
 
   @Public()

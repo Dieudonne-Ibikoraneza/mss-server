@@ -3,7 +3,7 @@ import { OrderStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { AnalyticsPeriod, bucketize, resolvePeriod } from '@/common/utils/analytics-period';
-import { stockStatusOf } from '@/common/utils/stock-status';
+import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import { QueryMovementsDto } from './dto/query-movements.dto';
 
 /**
@@ -19,25 +19,27 @@ export class ReportsService {
   async stockSummary(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
 
-    const [movements, inventories] = await Promise.all([
+    const [movements, products, lowStockThreshold] = await Promise.all([
       this.prisma.stockAdjustment.findMany({
         where: { createdAt: { gte: resolved.from, lt: resolved.to } },
-        select: { changeQty: true, type: true, createdAt: true },
+        select: { changeAreaSqm: true, type: true, createdAt: true },
       }),
-      this.prisma.inventory.findMany({
-        where: { product: { isActive: true } },
+      this.prisma.product.findMany({
+        where: { isActive: true },
+        select: { quantityOnHandSqm: true, averageCostPrice: true },
       }),
+      getLowStockThreshold(this.prisma),
     ]);
 
     const sum = (predicate: (row: (typeof movements)[number]) => boolean) =>
-      movements.filter(predicate).reduce((total, row) => total + row.changeQty, 0);
+      movements.filter(predicate).reduce((total, row) => total + Number(row.changeAreaSqm), 0);
 
-    const totalInbound = sum((row) => row.changeQty > 0);
-    const totalOutbound = sum((row) => row.changeQty < 0);
+    const totalInbound = sum((row) => Number(row.changeAreaSqm) > 0);
+    const totalOutbound = sum((row) => Number(row.changeAreaSqm) < 0);
 
     // Valued at cost (average purchase price), never at the selling price.
-    const inventoryValue = inventories.reduce(
-      (total, row) => total + row.quantityOnHand * Number(row.averageCostPrice),
+    const inventoryValue = products.reduce(
+      (total, row) => total + Number(row.quantityOnHandSqm) * Number(row.averageCostPrice),
       0,
     );
 
@@ -49,22 +51,23 @@ export class ReportsService {
       /** Reported as a negative number, matching the signed quantities in the feed. */
       totalOutbound,
       netChange: totalInbound + totalOutbound,
-      activeProducts: inventories.length,
-      lowStockItems: inventories.filter(
-        (row) => row.quantityOnHand > 0 && row.quantityOnHand <= row.lowStockThreshold,
-      ).length,
-      outOfStockItems: inventories.filter((row) => row.quantityOnHand === 0).length,
+      activeProducts: products.length,
+      lowStockItems: products.filter((row) => {
+        const onHand = Number(row.quantityOnHandSqm);
+        return onHand > 0 && onHand <= lowStockThreshold;
+      }).length,
+      outOfStockItems: products.filter((row) => Number(row.quantityOnHandSqm) === 0).length,
       totalInventoryValue: inventoryValue,
       trend: bucketize(
         movements,
         resolved,
         (row) => row.createdAt,
-        (row) => row.changeQty,
+        (row) => Number(row.changeAreaSqm),
       ),
       byType: Object.values(StockMovementType).map((type) => ({
         type,
         movements: movements.filter((row) => row.type === type).length,
-        pieces: sum((row) => row.type === type),
+        areaSqm: sum((row) => row.type === type),
       })),
     };
   }
@@ -96,24 +99,27 @@ export class ReportsService {
 
   /** The alert list the stock overview leads with: what needs restocking, worst first. */
   async lowStock(limit = 20) {
-    const inventories = await this.prisma.inventory.findMany({
-      where: { product: { isActive: true } },
-      include: { product: { select: { id: true, name: true, sku: true, image: true } } },
-    });
+    const [products, lowStockThreshold] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true, sku: true, image: true, quantityOnHandSqm: true },
+      }),
+      getLowStockThreshold(this.prisma),
+    ]);
 
-    return inventories
-      .filter((row) => row.quantityOnHand <= row.lowStockThreshold)
-      .sort((a, b) => a.quantityOnHand - b.quantityOnHand)
+    return products
+      .map((row) => ({ ...row, quantityOnHandSqm: Number(row.quantityOnHandSqm) }))
+      .filter((row) => row.quantityOnHandSqm <= lowStockThreshold)
+      .sort((a, b) => a.quantityOnHandSqm - b.quantityOnHandSqm)
       .slice(0, limit)
       .map((row) => ({
-        productId: row.product.id,
-        name: row.product.name,
-        sku: row.product.sku,
-        image: row.product.image,
-        quantityOnHand: row.quantityOnHand,
-        reservedQuantity: row.reservedQuantity,
-        lowStockThreshold: row.lowStockThreshold,
-        stockStatus: stockStatusOf(row.quantityOnHand, row.lowStockThreshold),
+        productId: row.id,
+        name: row.name,
+        sku: row.sku,
+        image: row.image,
+        quantityOnHandSqm: row.quantityOnHandSqm,
+        lowStockThreshold,
+        stockStatus: stockStatusOf(row.quantityOnHandSqm, lowStockThreshold),
       }));
   }
 
