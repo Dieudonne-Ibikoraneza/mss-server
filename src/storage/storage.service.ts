@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 export const PRODUCT_IMAGES_BUCKET = 'Products';
+export const COLLECTION_IMAGES_BUCKET = 'Collections';
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 @Injectable()
@@ -23,6 +24,19 @@ export class StorageService {
   }
 
   async uploadProductImage(file: Express.Multer.File) {
+    return this.uploadImage(file, PRODUCT_IMAGES_BUCKET, 'products', 'product');
+  }
+
+  async uploadCollectionImage(file: Express.Multer.File) {
+    return this.uploadImage(file, COLLECTION_IMAGES_BUCKET, 'collections', 'collection');
+  }
+
+  private async uploadImage(
+    file: Express.Multer.File,
+    bucket: string,
+    folder: string,
+    resourceName: string,
+  ) {
     if (!this.supabase) {
       throw new ServiceUnavailableException(
         'Supabase storage is not configured. Set STORAGE_DRIVER=supabase and SUPABASE_SERVICE_ROLE_KEY.',
@@ -30,9 +44,9 @@ export class StorageService {
     }
 
     const extension = file.mimetype.split('/')[1];
-    const path = `products/${crypto.randomUUID()}.${extension}`;
+    const path = `${folder}/${crypto.randomUUID()}.${extension}`;
     const { error: uploadError } = await this.supabase.storage
-      .from(PRODUCT_IMAGES_BUCKET)
+      .from(bucket)
       .upload(path, file.buffer, {
         contentType: file.mimetype,
         cacheControl: '3600',
@@ -41,7 +55,7 @@ export class StorageService {
 
     if (uploadError) {
       throw new ServiceUnavailableException(
-        `Unable to upload product image: ${uploadError.message}`,
+        `Unable to upload ${resourceName} image: ${uploadError.message}`,
       );
     }
 
@@ -49,9 +63,9 @@ export class StorageService {
     // for why storing the URL itself would be a live bug, not just a caching
     // nicety. `url` here is only for the uploader's own immediate preview,
     // before the product it belongs to even exists yet to be re-fetched.
-    const url = await this.getSignedUrl(path);
+    const url = await this.getSignedUrl(path, bucket);
     return {
-      bucket: PRODUCT_IMAGES_BUCKET,
+      bucket,
       path,
       url,
       expiresIn: SIGNED_URL_TTL_SECONDS,
@@ -71,7 +85,7 @@ export class StorageService {
    * miss) rather than once at upload time, since a URL stored permanently in
    * the database would silently die the moment it expired.
    */
-  async getSignedUrl(path: string): Promise<string> {
+  async getSignedUrl(path: string, bucket = PRODUCT_IMAGES_BUCKET): Promise<string> {
     if (!this.supabase) {
       throw new ServiceUnavailableException(
         'Supabase storage is not configured. Set STORAGE_DRIVER=supabase and SUPABASE_SERVICE_ROLE_KEY.',
@@ -79,7 +93,7 @@ export class StorageService {
     }
 
     const { data, error } = await this.supabase.storage
-      .from(PRODUCT_IMAGES_BUCKET)
+      .from(bucket)
       .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
 
     if (error || !data?.signedUrl) {
