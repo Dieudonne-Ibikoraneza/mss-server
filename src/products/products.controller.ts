@@ -1,6 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+import { memoryStorage } from 'multer';
 import { Public } from '@/common/decorators/public.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
@@ -11,11 +25,48 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { CalculateQuantityDto } from './dto/calculate-quantity.dto';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
+import { StorageService } from '@/storage/storage.service';
+
+const PRODUCT_IMAGE_MAX_SIZE = 10 * 1024 * 1024;
+const PRODUCT_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 @ApiTags('products')
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly storageService: StorageService,
+  ) {}
+
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Upload a product image (admin/stock manager)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @Post('upload-image')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: PRODUCT_IMAGE_MAX_SIZE },
+      fileFilter: (_request, file, callback) => {
+        if (!PRODUCT_IMAGE_MIME_TYPES.includes(file.mimetype)) {
+          callback(new BadRequestException('Only JPEG, PNG, and WebP images are allowed.'), false);
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
+  uploadImage(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException('An image file is required in the "file" field.');
+    return this.storageService.uploadProductImage(file);
+  }
 
   @Public()
   @ApiOperation({ summary: 'List/search products' })

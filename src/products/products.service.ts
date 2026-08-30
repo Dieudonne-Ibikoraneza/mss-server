@@ -3,6 +3,7 @@ import { Prisma, Role, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
+import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-calculator';
@@ -30,7 +31,20 @@ export class ProductsService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly notifications: NotificationsService,
+    private readonly storage: StorageService,
   ) {}
+
+  /**
+   * A product's `image` is either an absolute URL (seeded/external catalog
+   * photos) or a bare blob path from `StorageService.uploadProductImage`
+   * (e.g. "products/<uuid>.png") — the latter only ever resolves to a real
+   * URL through `StorageService.getSignedUrl`, since the bucket behind it is
+   * private with no public/listable access at all.
+   */
+  private async resolveImageUrl(image: string): Promise<string> {
+    if (/^https?:\/\//i.test(image)) return image;
+    return this.storage.getSignedUrl(image);
+  }
 
   private static readonly ORDER_BY: Record<ProductSort, Prisma.ProductOrderByWithRelationInput> = {
     [ProductSort.NEWEST]: { createdAt: 'desc' },
@@ -38,7 +52,7 @@ export class ProductsService {
     [ProductSort.PRICE_DESC]: { price: 'desc' },
   };
 
-  private serialize(
+  private async serialize(
     product: Prisma.ProductGetPayload<{ include: { collection: true } }>,
     threshold: number,
     viewerRole?: Role,
@@ -46,12 +60,13 @@ export class ProductsService {
     // quantityOnHandSqm/averageCostPrice are pulled out of `rest` explicitly —
     // they live directly on the Product row now, so leaving them in `rest`
     // would leak exact stock/cost to clients and the public catalog.
-    const { collection, quantityOnHandSqm, averageCostPrice, ...rest } = product;
+    const { collection, quantityOnHandSqm, averageCostPrice, image, ...rest } = product;
     const onHandSqm = Number(quantityOnHandSqm);
     const costPrice = Number(averageCostPrice);
 
     return {
       ...rest,
+      image: await this.resolveImageUrl(image),
       size: collection.size,
       tileAreaSqm: Number(collection.tileAreaSqm),
       stockStatus: stockStatusOf(onHandSqm, threshold),
@@ -107,7 +122,7 @@ export class ProductsService {
     ]);
 
     const result = paginate(
-      items.map((item) => this.serialize(item, threshold, viewerRole)),
+      await Promise.all(items.map((item) => this.serialize(item, threshold, viewerRole))),
       total,
       query.page,
       query.limit,
@@ -127,7 +142,7 @@ export class ProductsService {
     ]);
     if (!product) throw new NotFoundException('Product not found.');
 
-    const result = this.serialize(product, threshold, viewerRole);
+    const result = await this.serialize(product, threshold, viewerRole);
     await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }

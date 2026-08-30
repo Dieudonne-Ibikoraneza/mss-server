@@ -81,6 +81,13 @@ export default () => ({
   storage: {
     driver: process.env.STORAGE_DRIVER ?? 'local',
     localPath: process.env.STORAGE_LOCAL_PATH ?? './uploads',
+    supabase: {
+      projectId: process.env.SUPABASE_PROJECT_ID ?? 'yinatdmepjyfvqjekbjp',
+      url:
+        process.env.SUPABASE_URL ??
+        `https://${process.env.SUPABASE_PROJECT_ID ?? 'yinatdmepjyfvqjekbjp'}.supabase.co`,
+      serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    },
     s3: {
       bucket: process.env.S3_BUCKET,
       region: process.env.S3_REGION,

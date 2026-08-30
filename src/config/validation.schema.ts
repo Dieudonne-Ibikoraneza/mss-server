@@ -22,4 +22,14 @@ export const validationSchema = Joi.object({
 
   THROTTLE_TTL_MS: Joi.number().default(60000),
   THROTTLE_LIMIT: Joi.number().default(100),
+
+  STORAGE_DRIVER: Joi.string().valid('local', 'supabase').default('local'),
+  STORAGE_LOCAL_PATH: Joi.string().default('./uploads'),
+  SUPABASE_PROJECT_ID: Joi.string().default('yinatdmepjyfvqjekbjp'),
+  SUPABASE_URL: Joi.string().uri().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: Joi.when('STORAGE_DRIVER', {
+    is: 'supabase',
+    then: Joi.string().min(20).required(),
+    otherwise: Joi.string().optional(),
+  }),
 });
