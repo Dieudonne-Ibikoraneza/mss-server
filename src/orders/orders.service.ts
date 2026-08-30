@@ -30,6 +30,7 @@ import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
+import { CartNegotiationsService } from '@/cart-negotiations/cart-negotiations.service';
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
 
@@ -95,6 +96,7 @@ export class OrdersService {
     private readonly events: EventsService,
     private readonly notifications: NotificationsService,
     private readonly negotiations: NegotiationsGateway,
+    private readonly cartNegotiations: CartNegotiationsService,
   ) {}
 
   private generateOrderNumber() {
@@ -146,15 +148,9 @@ export class OrdersService {
     });
 
     /**
-     * Ordering more than is on hand is allowed on purpose: the documented user
-     * journey has the customer negotiate the shortfall with the stock team
-     * ("Customer negotiates" -> "Customer places an order"), and the storefront
-     * lets them do exactly that. We record what is short so the order opens with
-     * a negotiation thread instead of failing at checkout.
-     *
      * Stock isn't reserved on placement — `quantityOnHandSqm` only moves when
-     * the order is actually delivered (see `updateStatus` below) — so this
-     * check is a point-in-time read, not a hold.
+     * the order is actually delivered (see `updateStatus` below) — so this is
+     * a point-in-time read, not a hold, and can still race a concurrent order.
      */
     const shortages: StockShortage[] = [];
     for (const line of lineItems) {
@@ -167,6 +163,60 @@ export class OrdersService {
           availableAreaSqm,
         });
       }
+    }
+
+    /**
+     * A customer checking out their own cart never gets an order out of this
+     * when part of it exceeds stock on hand — no order is created at all.
+     * Instead this opens (or continues) their pre-order `CartNegotiation`
+     * thread, seeded with the customer's *entire* cart (not just the short
+     * lines) so the stock team has full context on the very first message,
+     * not just the one item that happened to run short. The storefront's own
+     * "Place Order" button is already disabled in this state — this exists
+     * for the cases that button can't catch: a stale cart snapshot, a
+     * concurrent order draining stock between page load and checkout, or a
+     * direct API call.
+     *
+     * Staff placing an order *on a customer's behalf* (`dto.customerId`) keep
+     * the old behavior below: the order is still created, with the shortage
+     * recorded as a message on the order itself. Staff overriding a stock
+     * limit for a customer they're actively helping is a different, legitimate
+     * call than a customer's own unattended checkout hitting the same wall.
+     */
+    if (!isStaff && shortages.length > 0) {
+      const cartItems = lineItems.map((line) => {
+        const availableAreaSqm = Number(line.product.quantityOnHandSqm);
+        const short = line.quantity.purchasedArea > availableAreaSqm;
+        return {
+          productId: line.product.id,
+          productName: line.product.name,
+          requestedAreaSqm: line.quantity.purchasedArea,
+          availabilityNote: short
+            ? availableAreaSqm > 0
+              ? `${availableAreaSqm} m² available`
+              : 'Out of stock'
+            : 'In stock',
+        };
+      });
+
+      const negotiation = await this.cartNegotiations.submit(
+        {
+          items: cartItems,
+          body:
+            "I tried to place an order for this cart, but part of it isn't available right now — " +
+            "let's work out the details.",
+        },
+        actingUser,
+      );
+
+      await this.events.recordJourneyEvent({
+        userId: customerId,
+        sessionId: customerId,
+        stage: 'NEGOTIATED',
+        metadata: { negotiationId: negotiation.id, shortages: shortages.length },
+      });
+
+      return { orderCreated: false as const, negotiation };
     }
 
     const subtotal = lineItems.reduce((sum, line) => sum + line.totalPrice, 0);
@@ -247,7 +297,7 @@ export class OrdersService {
       });
     }
 
-    return { ...order, shortages };
+    return { orderCreated: true as const, order: { ...order, shortages } };
   }
 
   async findAll(query: QueryOrdersDto, actingUser: AuthenticatedUser) {

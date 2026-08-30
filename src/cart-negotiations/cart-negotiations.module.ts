@@ -7,5 +7,6 @@ import { CartNegotiationsService } from './cart-negotiations.service';
   imports: [NegotiationsModule],
   controllers: [CartNegotiationsController],
   providers: [CartNegotiationsService],
+  exports: [CartNegotiationsService],
 })
 export class CartNegotiationsModule {}
