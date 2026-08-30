@@ -29,6 +29,23 @@ const GRAY_LABEL = '#6b7280';
 const GRAY_LINE = '#e5e7eb';
 const BLACK = '#111827';
 
+/**
+ * The business's own MoMo/bank accounts — there is no payment gateway API
+ * behind this system, so a customer pays outside it (MoMo code or bank
+ * transfer) and then marks the order as paid from the order screen. Mirrors
+ * the same constant the storefront shows inline on the quotation card
+ * (`paymentInstructions` in `data/order-workflow.ts`) so the PDF and the
+ * in-app view never disagree.
+ */
+const PAYMENT_INSTRUCTIONS = {
+  momoCode: '*182*8*1*45231#',
+  momoName: 'Magnificat Smart Space Ltd',
+  bankName: 'Bank of Kigali',
+  bankAccountName: 'Magnificat Smart Space Ltd',
+  bankAccountNumber: '00040-11223344-55',
+  bankSwift: 'BKIGRWRW',
+};
+
 const SUITABLE_FOR_LABEL: Record<SuitableFor, string> = {
   FLOOR: 'Floor Tile',
   WALL: 'Wall Tile',
@@ -198,7 +215,45 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
     doc.moveDown(0.7);
     totalsLine(doc, 'Total quotation', money(order.total, order.currency), true);
 
-    doc.moveDown(3);
+    doc.moveDown(1.4);
+    rule(doc);
+    doc.moveDown(1);
+
+    // --- Payment details ---------------------------------------------------
+    label(doc, 'PAYMENT DETAILS');
+    doc
+      .fontSize(9.5)
+      .fillColor(GRAY_LABEL)
+      .font('Helvetica')
+      .text('Pay the total above via either option, then mark this order as paid from the order screen.');
+    doc.moveDown(0.6);
+
+    doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('MoMo Pay');
+    doc
+      .fontSize(10.5)
+      .fillColor(NAVY)
+      .font('Helvetica-Bold')
+      .text(PAYMENT_INSTRUCTIONS.momoCode);
+    doc
+      .fontSize(9)
+      .fillColor(GRAY_LABEL)
+      .font('Helvetica')
+      .text(PAYMENT_INSTRUCTIONS.momoName);
+
+    doc.moveDown(0.6);
+    doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('Bank transfer');
+    doc
+      .fontSize(10)
+      .fillColor(BLACK)
+      .font('Helvetica')
+      .text(`${PAYMENT_INSTRUCTIONS.bankName} — ${PAYMENT_INSTRUCTIONS.bankAccountNumber}`);
+    doc
+      .fontSize(9)
+      .fillColor(GRAY_LABEL)
+      .font('Helvetica')
+      .text(`${PAYMENT_INSTRUCTIONS.bankAccountName} · SWIFT ${PAYMENT_INSTRUCTIONS.bankSwift}`);
+
+    doc.moveDown(1.4);
     doc
       .fontSize(8)
       .fillColor(GRAY_LABEL)
