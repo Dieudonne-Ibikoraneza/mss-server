@@ -375,13 +375,24 @@ export class OrdersService {
 
   // --- Delivery details ------------------------------------------------------
 
-  /** Customers supply their own delivery details; staff can fill them in on the customer's behalf. */
+  /**
+   * Customers supply their own delivery details; staff can fill them in on the
+   * customer's behalf. Locked once a quotation has gone out — the stock team
+   * costs the transport fee against these exact details, so changing them
+   * afterwards would silently invalidate a quotation the customer may already
+   * be paying against.
+   */
   async saveDeliveryDetails(
     id: string,
     dto: SaveDeliveryDetailsDto,
     actingUser: AuthenticatedUser,
   ) {
-    await this.assertAccess(id, actingUser);
+    const order = await this.assertAccess(id, actingUser);
+    if (order.quotationStatus !== QuotationStatus.AWAITING_REVIEW) {
+      throw new BadRequestException(
+        'Delivery details are locked once a quotation has been sent for this order.',
+      );
+    }
 
     return this.prisma.orderDelivery.upsert({
       where: { orderId: id },
