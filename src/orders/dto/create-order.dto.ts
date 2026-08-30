@@ -8,9 +8,11 @@ import {
   IsPositive,
   IsString,
   IsUUID,
+  Max,
   ValidateNested,
 } from 'class-validator';
 import { OrderType } from '@prisma/client';
+import { MAX_ORDER_AREA_SQM } from '@/common/utils/tile-calculator';
 
 export class OrderItemInputDto {
   @IsUUID()
@@ -18,6 +20,7 @@ export class OrderItemInputDto {
 
   @IsNumber()
   @IsPositive()
+  @Max(MAX_ORDER_AREA_SQM)
   areaSqm: number;
 }
 

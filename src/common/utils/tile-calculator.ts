@@ -1,3 +1,14 @@
+/**
+ * Upper bound for a single cart/order line's area, in m². Well past any real
+ * order (a football pitch is ~7,140 m²) but comfortably under the hard
+ * ceiling `CartItem.areaSqm` / `OrderItem.requiredAreaSqm` impose in the
+ * database (`Decimal(10, 4)` — anything >= 10^6 overflows the column and
+ * Postgres throws a raw, unhandled "numeric field overflow" instead of a
+ * clean validation error). Enforced via `@Max` on the DTOs that accept a
+ * customer-typed area, not here — this constant just keeps them agreeing.
+ */
+export const MAX_ORDER_AREA_SQM = 100_000;
+
 export type TilePackaging = {
   tileAreaSqm: number;
   boxCoverageSqm: number;
