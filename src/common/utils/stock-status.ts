@@ -3,6 +3,13 @@ import type { PrismaService } from '@/prisma/prisma.service';
 
 export type StockStatus = 'in_stock' | 'low_stock' | 'out_of_stock';
 
+/** Mirrors the client's own `stockLabels` (product-card.tsx) — the only wording a non-staff viewer should ever see for stock. */
+export const STOCK_STATUS_LABEL: Record<StockStatus, string> = {
+  in_stock: 'In stock',
+  low_stock: 'Low stock',
+  out_of_stock: 'Out of stock',
+};
+
 /**
  * Exact stock counts and cost figures are staff-only everywhere in the app
  * (doc 3.2) — clients and anonymous/public callers only ever see `stockStatus`.

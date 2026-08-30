@@ -18,7 +18,12 @@ import { RedisService } from '@/redis/redis.service';
 import { EventsService } from '@/events/events.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
-import { canSeeExactStock } from '@/common/utils/stock-status';
+import {
+  STOCK_STATUS_LABEL,
+  canSeeExactStock,
+  getLowStockThreshold,
+  stockStatusOf,
+} from '@/common/utils/stock-status';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { invalidateProductsCache } from '@/products/products-cache.util';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -184,20 +189,19 @@ export class OrdersService {
      * call than a customer's own unattended checkout hitting the same wall.
      */
     if (!isStaff && shortages.length > 0) {
-      const cartItems = lineItems.map((line) => {
-        const availableAreaSqm = Number(line.product.quantityOnHandSqm);
-        const short = line.quantity.purchasedArea > availableAreaSqm;
-        return {
-          productId: line.product.id,
-          productName: line.product.name,
-          requestedAreaSqm: line.quantity.purchasedArea,
-          availabilityNote: short
-            ? availableAreaSqm > 0
-              ? `${availableAreaSqm} m² available`
-              : 'Out of stock'
-            : 'In stock',
-        };
-      });
+      // A status label, never the exact `quantityOnHandSqm` — that figure is
+      // staff-only everywhere else in the app (doc 3.2), and a negotiation
+      // thread the customer can read back is no exception.
+      const lowStockThreshold = await getLowStockThreshold(this.prisma);
+      const cartItems = lineItems.map((line) => ({
+        productId: line.product.id,
+        productName: line.product.name,
+        requestedAreaSqm: line.quantity.purchasedArea,
+        availabilityNote:
+          STOCK_STATUS_LABEL[
+            stockStatusOf(Number(line.product.quantityOnHandSqm), lowStockThreshold)
+          ],
+      }));
 
       const negotiation = await this.cartNegotiations.submit(
         {
