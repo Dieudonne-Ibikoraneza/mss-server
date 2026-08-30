@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { Roles } from '@/common/decorators/roles.decorator';
@@ -29,6 +29,15 @@ export class CartNegotiationsController {
   @Get('mine')
   mine(@CurrentUser() user: AuthenticatedUser) {
     return this.service.mine(user);
+  }
+
+  @ApiOperation({
+    summary: "Clear the calling customer's own negotiation thread",
+    description: 'Deletes it entirely, including its items and messages — a fresh start, not an archive.',
+  })
+  @Delete('mine')
+  clearMine(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.clearMine(user);
   }
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER, Role.DATA_ANALYST)

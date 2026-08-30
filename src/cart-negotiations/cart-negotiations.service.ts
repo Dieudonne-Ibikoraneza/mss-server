@@ -119,6 +119,23 @@ export class CartNegotiationsService {
     });
   }
 
+  /**
+   * The customer clearing their own thread — a fresh start once whatever it
+   * was about is settled, rather than carrying old back-and-forth forever.
+   * Cascades to its items/messages (see schema.prisma). Staff have no
+   * equivalent: their inbox is the permanent record, this is only ever the
+   * customer tidying their own side.
+   */
+  async clearMine(actingUser: AuthenticatedUser) {
+    const existing = await this.prisma.cartNegotiation.findFirst({
+      where: { customerId: actingUser.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!existing) return { cleared: false };
+    await this.prisma.cartNegotiation.delete({ where: { id: existing.id } });
+    return { cleared: true };
+  }
+
   async findOne(id: string, actingUser: AuthenticatedUser) {
     await this.assertAccess(id, actingUser);
     return this.prisma.cartNegotiation.findUniqueOrThrow({
