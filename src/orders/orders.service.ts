@@ -351,6 +351,7 @@ export class OrdersService {
       include: { items: { include: { product: true } } },
     });
     if (!order) throw new NotFoundException('Order not found.');
+    this.assertNotCancelled(order);
 
     if (dto.status === OrderStatus.DELIVERED) {
       // Delivering means the goods physically left the warehouse, so on-hand must cover them.
@@ -442,6 +443,7 @@ export class OrdersService {
     actingUser: AuthenticatedUser,
   ) {
     const order = await this.assertAccess(id, actingUser);
+    this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.AWAITING_REVIEW) {
       throw new BadRequestException(
         'Delivery details are locked once a quotation has been sent for this order.',
@@ -463,6 +465,13 @@ export class OrdersService {
     }
   }
 
+  /** Cancelled is terminal — nothing about the order (delivery, quotation, status) can change after it. */
+  private assertNotCancelled(order: { status: OrderStatus }) {
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('This order was cancelled and can no longer be edited.');
+    }
+  }
+
   /**
    * Costs the transport and sends the quotation to the customer. Re-sending after
    * the fee has been edited is allowed, but not once payment is already in flight.
@@ -471,6 +480,7 @@ export class OrdersService {
     this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Order not found.');
+    this.assertNotCancelled(order);
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw new BadRequestException('This quotation has already been paid and verified.');
     }
@@ -568,6 +578,7 @@ export class OrdersService {
     this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Order not found.');
+    this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
       throw new BadRequestException('This order has no submitted payment awaiting verification.');
     }
