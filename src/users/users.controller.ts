@@ -38,17 +38,21 @@ export class UsersController {
     return this.usersService.closeOwnAccount(user.id);
   }
 
-  @Roles(Role.ADMIN, Role.SALES_PERSON)
+  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER)
   @ApiOperation({
-    summary: 'List customers with their spend summary (admin/sales)',
+    summary: 'List customers with their spend summary (admin/sales/stock)',
+    description:
+      "Stock managers can place orders on a customer's behalf, so they need to find them too.",
   })
   @Get('customers')
   listCustomers(@Query() query: QueryCustomersDto) {
     return this.usersService.listCustomers(query);
   }
 
-  @Roles(Role.ADMIN, Role.SALES_PERSON)
-  @ApiOperation({ summary: 'Get one customer with spend summary and recent orders (admin/sales)' })
+  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER)
+  @ApiOperation({
+    summary: 'Get one customer with spend summary and recent orders (admin/sales/stock)',
+  })
   @Get('customers/:id')
   findCustomer(@Param('id') id: string) {
     return this.usersService.findCustomer(id);
