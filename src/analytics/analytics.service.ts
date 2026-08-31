@@ -809,7 +809,9 @@ export class AnalyticsService {
         }),
         this.prisma.orderItem.groupBy({
           by: ['productId'],
-          where: { order: { createdAt: inRange } },
+          // Same "earned" scope as `earnedOrders` above — an item on a
+          // pending or cancelled order hasn't actually sold anything yet.
+          where: { order: { createdAt: inRange, status: { in: EARNED_STATUSES } } },
           _sum: { totalPrice: true, totalPieces: true },
           orderBy: { _sum: { totalPrice: 'desc' } },
           take: 10,
