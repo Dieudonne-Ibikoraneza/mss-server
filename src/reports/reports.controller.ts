@@ -6,7 +6,13 @@ import { ReportsService } from './reports.service';
 import { QueryMovementsDto } from './dto/query-movements.dto';
 import { QueryReportDto } from './dto/query-report.dto';
 
-/** Stock reporting for the warehouse side of the business (doc 3.10, 3.11). */
+/**
+ * Stock reporting for the warehouse side of the business (doc 3.10, 3.11) —
+ * movements, low stock, and the fulfilment queue. The rest of the stock
+ * reports page (sales overview, AI performance, repeat purchase rate,
+ * conversion journey) lives under `/analytics/*`, which this same set of
+ * roles can also reach — see `analytics.controller.ts`.
+ */
 @ApiTags('reports')
 @ApiBearerAuth()
 @Roles(Role.STOCK_MANAGER, Role.ADMIN, Role.DATA_ANALYST)

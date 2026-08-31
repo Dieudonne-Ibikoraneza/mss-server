@@ -125,7 +125,7 @@ Grounding and safety, enforced regardless of what the model returns:
 - The API key is sent via the `x-goog-api-key` header, never in the URL.
 
 Every recommendation shown is persisted to the `Recommendation` table (rank,
-match score, reason), which is what `GET /analytics/ai-recommendations`
+match score, reason), which is what `GET /analytics/tiles/recommendations`
 reports on.
 
 Image/video room-preview generation (`/chatbot/preview/image`,
@@ -232,6 +232,115 @@ newAvgCost = (oldAvgCost × oldQty + batchCostPerPiece × incomingQty) / (oldQty
   `GET /reports/stock/summary` is `Σ quantityOnHand × averageCostPrice` —
   stock valued at cost, never at the selling price.
 
+## Analytics: domains, periods, and formulas
+
+`analytics` is structured around four domains, matching the four analyst
+dashboards, plus one cross-domain landing screen — not one endpoint per
+widget:
+
+| Endpoint | Domain |
+| --- | --- |
+| `GET /analytics/overview` | Cross-dashboard KPI strip |
+| `GET /analytics/customers` | Customer Analytics — totals, acquisition channels, project types, new-vs-repeat trend |
+| `GET /analytics/sales` | Sales Analytics — period totals, % change vs. prior period, breakdowns, best sellers, repeat-purchase rate |
+| `GET /analytics/tiles` | Tile Analytics — interaction leaderboards + paginated per-tile table, one call |
+| `GET /analytics/tiles/:productId` | Selection rate / purchase conversion for one tile |
+| `GET /analytics/tiles/recommendations` | AI recommendation performance — summary + paginated per-tile table, one call (nested under tiles: recommendations are about tiles) |
+| `GET /analytics/journey` | Customer journey funnel, with per-stage drop-off |
+| `GET /analytics/journey/:stage` | Drill-down: who reached this stage and what they concretely did there (see below) |
+
+Each of the merged endpoints (`tiles`, `tiles/recommendations`) used to be
+two separate routes — a leaderboard/summary call and a separate paginated
+table call, computed from inconsistent windows (the table wasn't even
+period-filtered). They're now one call, one period, one response, with a
+`table` key for the paginated part. `sales` similarly absorbed what used to
+be three endpoints (`sales`, `sales-overview`, `repeat-purchase-rate`) and
+`customers` absorbed a fourth (`marketing`, which was fully redundant with
+`customers.byHeardAboutUs`) — the whole module went from ~12 routes across
+`analytics`, plus 5 more duplicated under `reports` for `STOCK_MANAGER`, down
+to 8.
+
+**Access, no content trimming**: `ADMIN`, `DATA_ANALYST`, and `STOCK_MANAGER`
+hit the exact same six endpoints and get the exact same shape back, revenue
+figures included — `STOCK_MANAGER` needs the sales picture on their own
+Reports page as much as anyone. `CLIENT` can't reach any of it.
+
+`SALES_PERSON` is the one role limited to a subset: `GET /analytics/overview`
+and `GET /analytics/sales` carry a per-method `@Roles` override granting them
+access too (their own Overview and Sales screens), with the same full figures
+as everyone else — but `customers`, `tiles`, `tiles/recommendations`, and
+`journey` stay `ADMIN`/`DATA_ANALYST`/`STOCK_MANAGER` only, since there was
+no evidence any `SALES_PERSON`-facing screen needs those.
+
+(An earlier version of this trimmed revenue out of `STOCK_MANAGER`'s
+responses — `common/utils/analytics-visibility.ts` — until it became clear
+their own Reports page needs the same sales figures too. Since every role
+that can reach these endpoints now sees the same content, that trimming
+layer was removed rather than left in as dead code.)
+
+`reports` keeps only what's genuinely stock-specific — movements, low
+stock, fulfilment queue — for the same three roles. It no longer delegates
+to `AnalyticsService` for anything: since `STOCK_MANAGER` now reaches
+`/analytics/*` directly, that delegation layer was pure duplication and has
+been removed.
+
+Every dashboard/report shares one period model (`AnalyticsPeriod`:
+`WEEKLY`/`MONTHLY`/`YEARLY`, resolved by `resolvePeriod()` in
+`common/utils/analytics-period.ts` into 7 days / 30 days / 12 months —
+exactly the "7 DAYS / 30 DAYS / 12 MONTHS" switcher). Every `?period=` query
+param accepts the same enum and defaults to `MONTHLY`. `sales` is
+deliberately period-scoped throughout (unlike the endpoints it replaced,
+where the headline total was period-scoped but the breakdowns quietly
+weren't) — its total is the sum of the visible chart, and it compares
+against the immediately preceding window of equal length ("+12.4% vs last
+period").
+
+The percentage formulas (doc 3.9's "FORMULAS" panel) live in one place,
+`common/utils/metrics.ts`, rather than being re-derived per screen:
+
+| Formula | Computed as |
+| --- | --- |
+| Tile Selection Rate | `applied / viewed * 100` |
+| Tile Purchase Conversion | `purchased / viewed * 100` |
+| Recommendation Acceptance Rate | `accepted / displayed * 100` |
+| Recommendation Purchase Rate | `purchased / displayed * 100` |
+
+All four (and every other rate in the app) reduce to `percent(part, whole)`;
+`percentChange(current, previous)` sits alongside it for "+12.4% vs last
+period"-style comparisons.
+
+**The funnel is cumulative, not per-event**: `GET /analytics/journey`'s stage
+counts are "reached at least this far", not "explicitly logged this exact
+stage's event". A session that reaches `PURCHASED` counts toward every
+earlier stage too — including `OPENED_SYSTEM` — even if that specific event
+was never recorded (e.g. a staff-created order on a customer's behalf never
+fires the customer's own browsing events). This is standard funnel semantics
+and it's load-bearing, not cosmetic: counting exact-event sessions per stage
+can and did produce a funnel where a later stage had *more* sessions than an
+earlier one — customers appearing to purchase without ever having opened the
+system — which also broke `dropOffFromPrevious` into a negative number.
+`journeyStageDetail` (below) is the deliberate exception — its `userCount`
+stays exact-event, because a drill-down showing a real action needs a real
+event to point to.
+
+**Journey stage drill-down** — `GET /analytics/journey/:stage?period=`
+answers "who reached this stage, and what did they actually do there": the
+distinct users (profile included when known — anonymous sessions carry no
+profile) plus the real domain record behind the stage, not just a count —
+`SAVED_DESIGN` → the `RoomDesign`s themselves, `PLACED_ORDER`/`PURCHASED` →
+the `Order`s, `REQUESTED_QUOTATION`/`NEGOTIATED` → `QuoteRequest`/order
+negotiation threads, `VIEWED_TILE`/`APPLIED_TILE` → the `TileEvent`s with
+their product. `CREATED_ROOM`/`ENTERED_DIMENSIONS` have no backing table —
+the frontend attaches whatever it has (`roomId`, `length`×`width`/`areaSqm`)
+as free-form event `metadata`, and the drill-down resolves/formats that into
+a real action (`roomId` → the actual `Room`'s name and type; dimensions →
+"Entered dimensions — 20 m²") rather than returning opaque JSON, degrading
+to a generic action when the frontend sent nothing. **`OPENED_SYSTEM` is the
+one stage with no action at all** — arriving isn't something a customer
+*does*, it's the starting line every session begins from — so it always
+returns an empty `actions` array by design, distinct from the others simply
+having no data yet.
+
 ## Quotation & payment workflow (3.7)
 
 The order-to-payment flow, driven by `Order.quotationStatus`:
@@ -274,7 +383,8 @@ The order-to-payment flow, driven by `Order.quotationStatus`:
 | `calculator` | Floor plan calculator: dimensions → quantity + wastage + stock/sourced split + cost (3.8) |
 | `quotes` | Quotation requests + negotiation status, feeding the journey funnel |
 | `events` | Raw analytics event ingestion (tile viewed/applied/compared/saved, journey stage) |
-| `analytics` | Customer, tile interaction, sales, AI recommendation, marketing, journey-funnel dashboards (3.9) |
+| `analytics` | Customer/Sales/Tile (incl. AI recommendations)/Journey dashboards (3.9), four domains not a dozen endpoints — `ADMIN`/`DATA_ANALYST`/`STOCK_MANAGER` (+ `SALES_PERSON` on overview/sales), same full figures for all (see below) |
+| `reports` | Stock-specific reporting for the warehouse side (3.10, 3.11) — movements, low stock, fulfilment queue. Same three roles as `analytics`. |
 | `health` | `/health` liveness/readiness check |
 
 Every AI-dependent piece (chatbot replies/recommendations, image mockups,

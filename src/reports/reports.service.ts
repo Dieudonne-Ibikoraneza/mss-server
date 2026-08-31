@@ -7,10 +7,12 @@ import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status
 import { QueryMovementsDto } from './dto/query-movements.dto';
 
 /**
- * "Generate stock reports" (doc 3.11, stock manager). Everything here reads from
- * the StockAdjustment feed, which every path that moves stock writes to — manual
- * adjustments as well as the automatic outbound movement when an order is
- * delivered — so a single query answers "what moved, when, and who moved it".
+ * "Generate stock reports" (doc 3.10/3.11, stock manager) — stock movements,
+ * low stock, and the fulfilment queue. The rest of the stock reports page
+ * (sales overview, AI performance, repeat purchase rate, conversion journey)
+ * now lives directly under `/analytics/*`, which `STOCK_MANAGER` can reach
+ * too — see `analytics.controller.ts`. Nothing here needs to delegate to
+ * `AnalyticsService` any more.
  */
 @Injectable()
 export class ReportsService {
