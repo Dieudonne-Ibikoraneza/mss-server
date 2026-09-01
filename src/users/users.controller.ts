@@ -38,20 +38,20 @@ export class UsersController {
     return this.usersService.closeOwnAccount(user.id);
   }
 
-  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.DATA_ANALYST)
   @ApiOperation({
-    summary: 'List customers with their spend summary (admin/sales/stock)',
+    summary: 'List customers with their spend summary (admin/sales/stock/analyst)',
     description:
-      "Stock managers can place orders on a customer's behalf, so they need to find them too.",
+      "Stock managers place orders on a customer's behalf; analysts need it for customer-level insight.",
   })
   @Get('customers')
   listCustomers(@Query() query: QueryCustomersDto) {
     return this.usersService.listCustomers(query);
   }
 
-  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.DATA_ANALYST)
   @ApiOperation({
-    summary: 'Get one customer with spend summary and recent orders (admin/sales/stock)',
+    summary: 'Get one customer with spend summary and recent orders (admin/sales/stock/analyst)',
   })
   @Get('customers/:id')
   findCustomer(@Param('id') id: string) {
