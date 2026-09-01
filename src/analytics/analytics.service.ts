@@ -155,7 +155,7 @@ export class AnalyticsService {
   async customers(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
 
-    const [clients, byHeardAboutUs, repeatCustomers, projectTypes] = await Promise.all([
+    const [clients, byHeardAboutUs, repeatCustomers, projectTypes, allOrders] = await Promise.all([
       this.prisma.user.findMany({
         where: { role: 'CLIENT' },
         select: { id: true, createdAt: true, status: true },
@@ -172,9 +172,37 @@ export class AnalyticsService {
         having: { customerId: { _count: { gt: 1 } } },
       }),
       this.projectTypeDistribution(),
+      // Every order ever (not just this period) — a customer's *first* order
+      // can predate the window, so "was this their first?" needs the full
+      // history, even though only orders inside the window get bucketed below.
+      this.prisma.order.findMany({
+        where: { status: { not: OrderStatus.CANCELLED } },
+        select: { customerId: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
     ]);
 
     const repeatIds = new Set(repeatCustomers.map((row) => row.customerId));
+
+    // "New vs. repeat" trend: each order counts toward whichever bucket its
+    // date falls in, split by whether it was that customer's first order
+    // ever (chronologically, via the full-history scan above) or a later one.
+    const newOrderBuckets = resolved.buckets.map(() => 0);
+    const repeatOrderBuckets = resolved.buckets.map(() => 0);
+    const seenCustomers = new Set<string>();
+    for (const order of allOrders) {
+      const isFirstOrder = !seenCustomers.has(order.customerId);
+      seenCustomers.add(order.customerId);
+
+      const time = order.createdAt.getTime();
+      if (time < resolved.from.getTime() || time >= resolved.to.getTime()) continue;
+      const index = resolved.buckets.findIndex(
+        (bucket) => time >= bucket.start.getTime() && time < bucket.end.getTime(),
+      );
+      if (index < 0) continue;
+      if (isFirstOrder) newOrderBuckets[index] += 1;
+      else repeatOrderBuckets[index] += 1;
+    }
 
     return {
       period: resolved.period,
@@ -193,6 +221,20 @@ export class AnalyticsService {
       projectTypes,
       trend: {
         newCustomers: bucketize(clients, resolved, (row) => row.createdAt),
+        // Orders per bucket, split by whether each was the placing
+        // customer's first order ever or a later (repeat) one — a real
+        // "new vs. repeat" comparison over time, distinct from `newCustomers`
+        // above (that one's signups; this one's purchases).
+        ordersByCustomerType: {
+          new: resolved.buckets.map((bucket, index) => ({
+            label: bucket.label,
+            value: newOrderBuckets[index],
+          })),
+          repeat: resolved.buckets.map((bucket, index) => ({
+            label: bucket.label,
+            value: repeatOrderBuckets[index],
+          })),
+        },
       },
     };
   }
