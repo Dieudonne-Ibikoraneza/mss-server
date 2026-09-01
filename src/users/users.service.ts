@@ -198,6 +198,41 @@ export class UsersService {
       ...searchFilter(query.search),
     };
 
+    // `spend` can't be paginated in the database — it isn't a column, it's
+    // an aggregate over orders — so this path pulls every matching customer,
+    // ranks them in memory, and pages that ranked list. Fine at this scale
+    // (a customer base, not an events table); `newest` stays a cheap
+    // single-page query for the common case.
+    if (query.sort === 'spend') {
+      const [items, allStats] = await Promise.all([
+        this.prisma.user.findMany({ where, select: SAFE_USER_SELECT }),
+        this.prisma.order.groupBy({
+          by: ['customerId'],
+          where: { status: SPENDING_STATUSES },
+          _sum: { total: true },
+          _count: { _all: true },
+          _max: { createdAt: true },
+          _min: { createdAt: true },
+        }),
+      ]);
+
+      const withStats = items
+        .map((customer) => {
+          const row = allStats.find((entry) => entry.customerId === customer.id);
+          return {
+            ...customer,
+            orderCount: row?._count._all ?? 0,
+            lifetimeSpend: Number(row?._sum.total ?? 0),
+            firstOrderAt: row?._min.createdAt ?? null,
+            lastOrderAt: row?._max.createdAt ?? null,
+          };
+        })
+        .sort((a, b) => b.lifetimeSpend - a.lifetimeSpend);
+
+      const page = withStats.slice(query.skip, query.skip + query.limit);
+      return paginate(page, withStats.length, query.page, query.limit);
+    }
+
     const [items, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
@@ -215,6 +250,7 @@ export class UsersService {
       _sum: { total: true },
       _count: { _all: true },
       _max: { createdAt: true },
+      _min: { createdAt: true },
     });
 
     const withStats = items.map((customer) => {
@@ -223,6 +259,7 @@ export class UsersService {
         ...customer,
         orderCount: row?._count._all ?? 0,
         lifetimeSpend: Number(row?._sum.total ?? 0),
+        firstOrderAt: row?._min.createdAt ?? null,
         lastOrderAt: row?._max.createdAt ?? null,
       };
     });
@@ -244,6 +281,7 @@ export class UsersService {
         _sum: { total: true },
         _count: { _all: true },
         _max: { createdAt: true },
+        _min: { createdAt: true },
       }),
       this.prisma.order.findMany({
         where: { customerId: id },
@@ -259,6 +297,7 @@ export class UsersService {
       ...customer,
       orderCount: aggregate._count._all,
       lifetimeSpend: Number(aggregate._sum.total ?? 0),
+      firstOrderAt: aggregate._min.createdAt ?? null,
       lastOrderAt: aggregate._max.createdAt ?? null,
       favoriteCount: favorites,
       savedDesignCount: designs,

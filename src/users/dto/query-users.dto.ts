@@ -26,4 +26,9 @@ export class QueryCustomersDto extends PaginationDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  /** Default `newest` (createdAt desc, cheap). `spend` ranks by lifetime spend — needed for a real "Top Customers" list instead of over-fetching and sorting client-side. */
+  @IsOptional()
+  @IsEnum(['newest', 'spend'])
+  sort?: 'newest' | 'spend';
 }
