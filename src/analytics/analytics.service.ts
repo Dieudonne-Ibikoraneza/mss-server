@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  HearAboutUs,
   JourneyStage,
   OrderStatus,
   Prisma,
@@ -213,10 +214,15 @@ export class AnalyticsService {
       ).length,
       repeatCustomerCount: repeatIds.size,
       repeatPurchaseRate: percent(repeatIds.size, clients.length),
-      /** Acquisition channel breakdown — "how customers discovered the business". */
-      byHeardAboutUs: byHeardAboutUs.map((row) => ({
-        source: row.heardAboutUs,
-        count: row._count._all,
+      /**
+       * Acquisition channel breakdown — "how customers discovered the
+       * business". Zero-filled across every `HearAboutUs` value (plus
+       * "not specified") rather than only the ones with a real count, so
+       * the chart always shows the full, consistent set of channels.
+       */
+      byHeardAboutUs: [...Object.values(HearAboutUs), null].map((source) => ({
+        source,
+        count: byHeardAboutUs.find((row) => row.heardAboutUs === source)?._count._all ?? 0,
       })),
       projectTypes,
       trend: {
