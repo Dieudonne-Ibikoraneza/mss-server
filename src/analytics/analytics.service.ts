@@ -917,6 +917,31 @@ export class AnalyticsService {
     const accepted = summaryRows.filter((row) => row.decision === 'ACCEPTED').length;
     const purchased = summaryRows.filter((row) => row.purchased).length;
 
+    // Two real per-bucket series for the "AI Recommendations" chart — average
+    // match score and acceptance rate, both over time — computed in one pass
+    // over `summaryRows` since `bucketize` only sums a single value.
+    const bucketTotals = resolved.buckets.map(() => ({ matchScoreSum: 0, count: 0, accepted: 0 }));
+    for (const row of summaryRows) {
+      const time = row.createdAt.getTime();
+      const index = resolved.buckets.findIndex(
+        (bucket) => time >= bucket.start.getTime() && time < bucket.end.getTime(),
+      );
+      if (index < 0) continue;
+      bucketTotals[index].count += 1;
+      bucketTotals[index].matchScoreSum += Number(row.matchScore);
+      if (row.decision === 'ACCEPTED') bucketTotals[index].accepted += 1;
+    }
+    const matchScoreTrend = resolved.buckets.map((bucket, index) => ({
+      label: bucket.label,
+      value: bucketTotals[index].count
+        ? bucketTotals[index].matchScoreSum / bucketTotals[index].count
+        : 0,
+    }));
+    const acceptanceTrend = resolved.buckets.map((bucket, index) => ({
+      label: bucket.label,
+      value: percent(bucketTotals[index].accepted, bucketTotals[index].count),
+    }));
+
     const rows = products.map((product) => {
       const forProduct = grouped.filter((row) => row.productId === product.id);
       const displayed = forProduct.reduce((sum, row) => sum + row._count._all, 0);
@@ -954,6 +979,8 @@ export class AnalyticsService {
           ? summaryRows.reduce((sum, row) => sum + Number(row.matchScore), 0) / summaryRows.length
           : 0,
         trend: bucketize(summaryRows, resolved, (row) => row.createdAt),
+        matchScoreTrend,
+        acceptanceTrend,
       },
       table: paginate(rows, total, query.page, query.limit),
     };
