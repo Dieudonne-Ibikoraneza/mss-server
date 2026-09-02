@@ -91,6 +91,31 @@ export class ProductsService {
     };
   }
 
+  /**
+   * Serialises products embedded in another module's response (favourites,
+   * saved room designs) so a nested product carries the same signed image
+   * URL, `size`, `tileAreaSqm` and `stockStatus` as one fetched straight from
+   * `/products`, plus the nested `collection` (id/title/slug/size) the cart
+   * lines already expose. Callers must load the product with its `collection`.
+   */
+  async serializeEmbedded(
+    products: Prisma.ProductGetPayload<{ include: { collection: true } }>[],
+    viewerRole?: Role,
+  ) {
+    const threshold = await getLowStockThreshold(this.prisma);
+    return Promise.all(
+      products.map(async (product) => ({
+        ...(await this.serialize(product, threshold, viewerRole)),
+        collection: {
+          id: product.collection.id,
+          title: product.collection.title,
+          slug: product.collection.slug,
+          size: product.collection.size,
+        },
+      })),
+    );
+  }
+
   async findAll(query: QueryProductsDto, viewerRole?: Role) {
     const cacheKey =
       `${PRODUCTS_LIST_CACHE_PREFIX}${roleBucket(viewerRole)}:` +

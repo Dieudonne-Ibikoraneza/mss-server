@@ -1,20 +1,35 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
+import { ProductsService } from '@/products/products.service';
 
 @Injectable()
 export class FavoritesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsService,
+    private readonly products: ProductsService,
   ) {}
 
-  findAll(userId: string) {
-    return this.prisma.favorite.findMany({
+  async findAll(userId: string) {
+    const favorites = await this.prisma.favorite.findMany({
       where: { userId },
-      include: { product: true },
+      include: { product: { include: { collection: true } } },
       orderBy: { createdAt: 'desc' },
     });
+
+    // The nested product goes through the same serializer `/products` uses, so
+    // its image URL is signed and `size`/`stockStatus` are present for the card.
+    const products = await this.products.serializeEmbedded(
+      favorites.map((favorite) => favorite.product),
+    );
+
+    return favorites.map((favorite, index) => ({
+      id: favorite.id,
+      productId: favorite.productId,
+      createdAt: favorite.createdAt,
+      product: products[index],
+    }));
   }
 
   async add(userId: string, productId: string, sessionId: string) {

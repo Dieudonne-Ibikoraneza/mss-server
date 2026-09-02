@@ -4,17 +4,28 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { SuitableFor } from '@prisma/client';
+import { Prisma, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
+import { ProductsService } from '@/products/products.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
+
+/** Every design read carries its tiles, each tile's product (+ collection), the room, and the owner. */
+const DESIGN_INCLUDE = {
+  tiles: { include: { product: { include: { collection: true } } } },
+  room: true,
+  user: true,
+} satisfies Prisma.RoomDesignInclude;
+
+type DesignWithRelations = Prisma.RoomDesignGetPayload<{ include: typeof DESIGN_INCLUDE }>;
 
 @Injectable()
 export class RoomsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsService,
+    private readonly products: ProductsService,
   ) {}
 
   findAllRooms() {
@@ -23,6 +34,21 @@ export class RoomsService {
 
   createRoom(dto: CreateRoomDto) {
     return this.prisma.room.create({ data: dto });
+  }
+
+  /**
+   * Runs each tile's product through the catalog serializer so the design's
+   * embedded products carry a signed image URL and `size`/`stockStatus`, the
+   * same shape the account "Saved designs" page already renders for a product.
+   */
+  private async withSerializedTiles<T extends DesignWithRelations>(design: T) {
+    const serialized = await this.products.serializeEmbedded(
+      design.tiles.map((tile) => tile.product),
+    );
+    return {
+      ...design,
+      tiles: design.tiles.map((tile, index) => ({ ...tile, product: serialized[index] })),
+    };
   }
 
   async saveDesign(userId: string, dto: SaveRoomDesignDto) {
@@ -65,7 +91,7 @@ export class RoomsService {
           create: dto.tiles.map((tile) => ({ surface: tile.surface, productId: tile.productId })),
         },
       },
-      include: { tiles: { include: { product: true } }, room: true },
+      include: DESIGN_INCLUDE,
     });
 
     await Promise.all(
@@ -80,35 +106,37 @@ export class RoomsService {
     );
     await this.events.recordJourneyEvent({ userId, sessionId: userId, stage: 'SAVED_DESIGN' });
 
-    return design;
+    return this.withSerializedTiles(design);
   }
 
-  findMyDesigns(userId: string) {
-    return this.prisma.roomDesign.findMany({
+  async findMyDesigns(userId: string) {
+    const designs = await this.prisma.roomDesign.findMany({
       where: { userId },
-      include: { tiles: { include: { product: true } }, room: true },
+      include: DESIGN_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
+    return Promise.all(designs.map((design) => this.withSerializedTiles(design)));
   }
 
   async findDesign(id: string, actingUserId: string, isStaff: boolean) {
     const design = await this.prisma.roomDesign.findUnique({
       where: { id },
-      include: { tiles: { include: { product: true } }, room: true, user: true },
+      include: DESIGN_INCLUDE,
     });
     if (!design) throw new NotFoundException('Design not found.');
     if (!isStaff && design.userId !== actingUserId && !design.sharedWithSales) {
       throw new ForbiddenException('You do not have access to this design.');
     }
-    return design;
+    return this.withSerializedTiles(design);
   }
 
   /** Designs a client has explicitly shared, for the sales team to review. */
-  findSharedDesigns() {
-    return this.prisma.roomDesign.findMany({
+  async findSharedDesigns() {
+    const designs = await this.prisma.roomDesign.findMany({
       where: { sharedWithSales: true },
-      include: { tiles: { include: { product: true } }, room: true, user: true },
+      include: DESIGN_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
+    return Promise.all(designs.map((design) => this.withSerializedTiles(design)));
   }
 }
