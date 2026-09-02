@@ -963,6 +963,7 @@ export class AnalyticsService {
     ]);
 
     const accepted = summaryRows.filter((row) => row.decision === 'ACCEPTED').length;
+    const rejected = summaryRows.filter((row) => row.decision === 'REJECTED').length;
     const purchased = summaryRows.filter((row) => row.purchased).length;
 
     // Two real per-bucket series for the "AI Recommendations" chart — average
@@ -1020,6 +1021,7 @@ export class AnalyticsService {
       summary: {
         displayed: summaryRows.length,
         accepted,
+        rejected,
         purchased,
         acceptanceRate: percent(accepted, summaryRows.length),
         purchaseRate: percent(purchased, summaryRows.length),
