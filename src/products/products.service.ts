@@ -4,6 +4,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { StorageService } from '@/storage/storage.service';
+import { OrdersService } from '@/orders/orders.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-calculator';
@@ -37,6 +38,7 @@ export class ProductsService {
     private readonly redis: RedisService,
     private readonly notifications: NotificationsService,
     private readonly storage: StorageService,
+    private readonly orders: OrdersService,
   ) {}
 
   /**
@@ -323,6 +325,12 @@ export class ProductsService {
 
     await invalidateProductsCache(this.redis, [productId]);
     await this.notifications.notifyLowStock([productId]);
+    // Stock coming in can be exactly what a waitlisted order (doc-driven
+    // feature, no doc section number yet) was missing — a correction/damage
+    // adjustment (negative changeAreaSqm) never frees anything, so skip it.
+    if (dto.changeAreaSqm > 0) {
+      await this.orders.promoteWaitlistedOrders([productId]);
+    }
     return updated;
   }
 }

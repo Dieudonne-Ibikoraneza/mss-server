@@ -358,6 +358,64 @@ async function main() {
       `),
     },
     {
+      key: 'ORDER_WAITLISTED',
+      language: Language.EN,
+      subject: 'Order {{orderNumber}} is accepted — waitlisted for stock',
+      bodyText:
+        "Hi {{fullName}},\n\nWe've accepted your order {{orderNumber}} — part of it isn't in stock right " +
+        "now, so it's on our waitlist. We'll email you the moment there's enough stock, and you'll then " +
+        'have a short window to complete payment. No action needed from you for now:\n\n{{orderUrl}}',
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">We've accepted your order <strong>{{orderNumber}}</strong> — part of it isn't in stock right now, so it's on our waitlist.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">We'll email you the moment there's enough stock, and you'll then have a short window to complete payment. No action needed from you for now.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">View order</a></p>
+      `),
+    },
+    {
+      key: 'ORDER_WAITLISTED',
+      language: Language.RW,
+      subject: 'Ikurikira {{orderNumber}} ryemejwe — ririteguriwe ububiko',
+      bodyText:
+        'Muraho {{fullName}},\n\nTwemeje ikurikira ryawe {{orderNumber}} — igice cyaryo nticyaboneka ' +
+        'ubu, ku buryo ryinjijwe ku rutonde rw\'abategereje. Tuzakumenyesha igihe ababiko buzaboneka, ' +
+        "hanyuma uzahabwa igihe gito cyo kwishyura. Nta kindi ugomba gukora ubu:\n\n{{orderUrl}}",
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Twemeje ikurikira ryawe <strong>{{orderNumber}}</strong> — igice cyaryo nticyaboneka ubu, ku buryo ryinjijwe ku rutonde rw'abategereje.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Tuzakumenyesha igihe ababiko buzaboneka, hanyuma uzahabwa igihe gito cyo kwishyura. Nta kindi ugomba gukora ubu.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba ikurikira</a></p>
+      `),
+    },
+    {
+      key: 'ORDER_WAITLIST_AVAILABLE',
+      language: Language.EN,
+      subject: 'Good news — order {{orderNumber}} is ready to pay',
+      bodyText:
+        "Hi {{fullName}},\n\nEnough stock is now available for order {{orderNumber}} — it's been moved " +
+        "off the waitlist and you have a short window to complete payment before it's released again:\n\n{{orderUrl}}",
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Enough stock is now available for order <strong>{{orderNumber}}</strong> — it's been moved off the waitlist.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">You have a short window to complete payment before it's released again.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Complete payment</a></p>
+      `),
+    },
+    {
+      key: 'ORDER_WAITLIST_AVAILABLE',
+      language: Language.RW,
+      subject: 'Amakuru meza — ikurikira {{orderNumber}} riteguye kwishyurwa',
+      bodyText:
+        'Muraho {{fullName}},\n\nUbu ububiko buhagije buraboneka ku kurikira {{orderNumber}} — ryakuwe ku ' +
+        "rutonde rw'abategereje. Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi:\n\n{{orderUrl}}",
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Ubu ububiko buhagije buraboneka ku kurikira <strong>{{orderNumber}}</strong> — ryakuwe ku rutonde rw'abategereje.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Ishyura nonaha</a></p>
+      `),
+    },
+    {
       key: 'STAFF_ACCOUNT_CREATED',
       language: Language.RW,
       subject: "Konti yawe y'abakozi kuri Magnificat Smart Space iratunganye",

@@ -13,6 +13,8 @@ export const EMAIL_TEMPLATE_KEYS = {
   LOW_STOCK_ALERT: 'LOW_STOCK_ALERT',
   QUOTATION_READY: 'QUOTATION_READY',
   ORDER_RESERVATION_EXPIRED: 'ORDER_RESERVATION_EXPIRED',
+  ORDER_WAITLISTED: 'ORDER_WAITLISTED',
+  ORDER_WAITLIST_AVAILABLE: 'ORDER_WAITLIST_AVAILABLE',
 } as const;
 
 /** PlatformSetting key that switches low-stock alerts on and off from the admin panel. */
@@ -345,6 +347,95 @@ export class NotificationsService implements OnModuleInit {
       const message = error instanceof Error ? error.message : 'unknown error';
       this.logger.warn(
         `Failed to send reservation-expired email for order ${orderNumber}: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * "Your order has been accepted, but part of it is waiting on stock" —
+   * sent the moment `OrdersService#create` accepts a cart it can't fully
+   * cover yet as a WAITLISTED order, so the customer has written
+   * confirmation immediately instead of only the in-app order message.
+   * Best-effort, same reasoning as `notifyLowStock`.
+   */
+  async sendOrderWaitlistedEmail(
+    email: string,
+    fullName: string,
+    orderNumber: string,
+    orderId: string,
+    language: Language = Language.EN,
+  ): Promise<void> {
+    try {
+      const template = await this.getTemplate(EMAIL_TEMPLATE_KEYS.ORDER_WAITLISTED, language);
+      if (!template) {
+        this.logger.warn(
+          `EmailTemplate "${EMAIL_TEMPLATE_KEYS.ORDER_WAITLISTED}" not found — skipping waitlisted email. Run \`npm run prisma:seed\`.`,
+        );
+        return;
+      }
+
+      const orderUrl = `${this.config.get<string>('app.clientUrl')}/account/orders/${orderId}`;
+      const vars = { fullName, orderNumber, orderUrl };
+      const htmlVars = {
+        fullName: escapeHtml(fullName),
+        orderNumber: escapeHtml(orderNumber),
+        orderUrl,
+      };
+      await this.sendEmail(
+        email,
+        renderTemplate(template.subject, vars),
+        renderTemplate(template.bodyText, vars),
+        renderTemplate(template.bodyHtml, htmlVars),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Failed to send waitlisted email for order ${orderNumber}: ${message}`);
+    }
+  }
+
+  /**
+   * The good half of the waitlist (`OrdersService#promoteWaitlistedOrders`):
+   * enough stock finally came in to cover the order, so it was promoted to
+   * PENDING — its payment window is now running — and the customer needs to
+   * know to come pay before it lapses. Best-effort, same reasoning as
+   * `notifyLowStock`.
+   */
+  async sendOrderWaitlistAvailableEmail(
+    email: string,
+    fullName: string,
+    orderNumber: string,
+    orderId: string,
+    language: Language = Language.EN,
+  ): Promise<void> {
+    try {
+      const template = await this.getTemplate(
+        EMAIL_TEMPLATE_KEYS.ORDER_WAITLIST_AVAILABLE,
+        language,
+      );
+      if (!template) {
+        this.logger.warn(
+          `EmailTemplate "${EMAIL_TEMPLATE_KEYS.ORDER_WAITLIST_AVAILABLE}" not found — skipping waitlist-available email. Run \`npm run prisma:seed\`.`,
+        );
+        return;
+      }
+
+      const orderUrl = `${this.config.get<string>('app.clientUrl')}/account/orders/${orderId}`;
+      const vars = { fullName, orderNumber, orderUrl };
+      const htmlVars = {
+        fullName: escapeHtml(fullName),
+        orderNumber: escapeHtml(orderNumber),
+        orderUrl,
+      };
+      await this.sendEmail(
+        email,
+        renderTemplate(template.subject, vars),
+        renderTemplate(template.bodyText, vars),
+        renderTemplate(template.bodyHtml, htmlVars),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(
+        `Failed to send waitlist-available email for order ${orderNumber}: ${message}`,
       );
     }
   }

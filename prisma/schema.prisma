@@ -75,6 +75,12 @@ enum OrderCreatorType {
 }
 
 enum OrderStatus {
+  /// Accepted, but part of it exceeds what's on hand right now — no stock is
+  /// held for it (there's nothing to hold yet) and no payment window is
+  /// running. Automatically promoted to PENDING (which starts both) the
+  /// moment enough stock frees up to cover the whole order — see
+  /// `OrdersService#promoteWaitlistedOrders`.
+  WAITLISTED
   PENDING
   PROCESSING
   READY_FOR_DISPATCH
@@ -401,6 +407,11 @@ model Order {
   /// still set once this passes. Null once released (committed or expired) —
   /// that's also how the sweep finds nothing left to do for this order twice.
   reservationExpiresAt DateTime?
+  /// Set the moment a WAITLISTED order is promoted to PENDING (enough stock
+  /// finally covers it) — never touched again after that, so the frontend's
+  /// "good news, place your payment now" prompt can tell a genuinely fresh
+  /// promotion apart from an order that has been PENDING all along.
+  waitlistPromotedAt   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

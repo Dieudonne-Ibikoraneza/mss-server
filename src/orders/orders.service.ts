@@ -21,13 +21,7 @@ import { RedisService } from '@/redis/redis.service';
 import { EventsService } from '@/events/events.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
-import {
-  STOCK_STATUS_LABEL,
-  availableAreaSqmOf,
-  canSeeExactStock,
-  getLowStockThreshold,
-  stockStatusOf,
-} from '@/common/utils/stock-status';
+import { availableAreaSqmOf, canSeeExactStock } from '@/common/utils/stock-status';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { invalidateProductsCache } from '@/products/products-cache.util';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -39,7 +33,6 @@ import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
-import { CartNegotiationsService } from '@/cart-negotiations/cart-negotiations.service';
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
 
@@ -108,7 +101,6 @@ export class OrdersService {
     private readonly events: EventsService,
     private readonly notifications: NotificationsService,
     private readonly negotiations: NegotiationsGateway,
-    private readonly cartNegotiations: CartNegotiationsService,
   ) {}
 
   private generateOrderNumber() {
@@ -206,6 +198,7 @@ export class OrdersService {
             order.customer.language,
           );
         }
+        await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
       } catch (error) {
         const message = error instanceof Error ? error.message : 'unknown error';
         this.logger.error(
@@ -213,6 +206,108 @@ export class OrdersService {
         );
       }
     }
+  }
+
+  /**
+   * The waitlist side of stock reservations: a WAITLISTED order (doc-driven
+   * feature, no doc section number yet — `create` above explains the booking
+   * behaviour) that can now be fully covered gets promoted to PENDING, which
+   * is what actually starts its stock hold and payment window, and its
+   * customer is emailed to come pay. Called whenever stock frees up for
+   * specific products — a restock (`ProductsService#adjustStock`), or another
+   * order's reservation being released or expiring (above, and
+   * `updateStatus`/`verifyPayment`) — and, with no `productIds`, as a
+   * periodic safety net for every product.
+   *
+   * Oldest waitlisted order first, so an earlier customer always claims
+   * freed stock before a later one; each order's check-then-reserve happens
+   * inside its own transaction, one order per transaction, for the same
+   * reasons `releaseExpiredReservations` does it that way.
+   */
+  async promoteWaitlistedOrders(productIds?: string[]): Promise<void> {
+    const waitlisted = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.WAITLISTED,
+        ...(productIds ? { items: { some: { productId: { in: productIds } } } } : {}),
+      },
+      include: { items: { include: { product: true } }, customer: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (waitlisted.length === 0) return;
+
+    for (const order of waitlisted) {
+      try {
+        const promoted = await this.prisma.$transaction(async (tx) => {
+          // Re-read fresh — an earlier order promoted earlier in this same
+          // pass may have just claimed the stock this one also needs.
+          const fresh = await tx.product.findMany({
+            where: { id: { in: order.items.map((item) => item.productId) } },
+          });
+          const byId = new Map(fresh.map((product) => [product.id, product]));
+
+          const stillShort = order.items.some((item) => {
+            const product = byId.get(item.productId)!;
+            const available = availableAreaSqmOf(
+              Number(product.quantityOnHandSqm),
+              Number(product.reservedAreaSqm),
+            );
+            return purchasedAreaOf(item) > available;
+          });
+          if (stillShort) return false;
+
+          for (const item of order.items) {
+            await tx.product.update({
+              where: { id: item.productId },
+              data: { reservedAreaSqm: { increment: purchasedAreaOf(item) } },
+            });
+          }
+
+          const reservationMinutes = Math.round(this.reservationWindowMs() / 60_000);
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.PENDING,
+              reservationExpiresAt: new Date(Date.now() + this.reservationWindowMs()),
+              waitlistPromotedAt: new Date(),
+              statusEvents: {
+                create: {
+                  status: OrderStatus.PENDING,
+                  note:
+                    'Enough stock is now available — promoted off the waitlist. ' +
+                    `You have ${reservationMinutes} minutes to complete payment.`,
+                },
+              },
+            },
+          });
+          return true;
+        });
+
+        if (!promoted) continue;
+
+        await invalidateProductsCache(
+          this.redis,
+          order.items.map((item) => item.productId),
+        );
+        if (order.customer.email) {
+          await this.notifications.sendOrderWaitlistAvailableEmail(
+            order.customer.email,
+            order.customer.fullName,
+            order.orderNumber,
+            order.id,
+            order.customer.language,
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'unknown error';
+        this.logger.error(`Failed to promote waitlisted order ${order.id}: ${message}`);
+      }
+    }
+  }
+
+  /** Safety net in case an event-triggered promotion was ever missed — the real work happens above, event-driven. */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  private async promoteWaitlistedOrdersSweep(): Promise<void> {
+    await this.promoteWaitlistedOrders();
   }
 
   async create(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
@@ -271,76 +366,51 @@ export class OrdersService {
     }
 
     /**
-     * A customer checking out their own cart never gets an order out of this
-     * when part of it exceeds stock on hand — no order is created at all.
-     * Instead this opens (or continues) their pre-order `CartNegotiation`
-     * thread, seeded with the customer's *entire* cart (not just the short
-     * lines) so the stock team has full context on the very first message,
-     * not just the one item that happened to run short. The storefront's own
-     * "Place Order" button is already disabled in this state — this exists
-     * for the cases that button can't catch: a stale cart snapshot, a
-     * concurrent order draining stock between page load and checkout, or a
-     * direct API call.
+     * A customer checking out their own cart when part of it exceeds stock
+     * on hand still gets a real order — accepted as a booking (doc-driven
+     * feature, no doc section number yet), not stalled behind a negotiation
+     * chat. It just starts life WAITLISTED instead of PENDING: no stock is
+     * held for it and no payment window runs, since there's nothing to hold
+     * yet. The moment enough stock frees up — a restock, or another
+     * customer's reservation expiring/being released — it's automatically
+     * promoted to PENDING (see `promoteWaitlistedOrders`), which is when the
+     * hold and the payment clock actually start, and the customer is emailed
+     * to come pay. The storefront's own "Place Order" button is already
+     * disabled in this state — this mostly exists for the cases that button
+     * can't catch: a stale cart snapshot, a concurrent order draining stock
+     * between page load and checkout, or a direct API call.
      *
      * Staff placing an order *on a customer's behalf* (`dto.customerId`) keep
-     * the old behavior below: the order is still created, with the shortage
-     * recorded as a message on the order itself. Staff overriding a stock
-     * limit for a customer they're actively helping is a different, legitimate
-     * call than a customer's own unattended checkout hitting the same wall.
+     * the old behavior: the order is created as PENDING right away, with the
+     * shortage recorded as a message on the order itself and stock reserved
+     * for the full amount regardless. Staff overriding a stock limit for a
+     * customer they're actively helping is a different, legitimate call than
+     * a customer's own unattended checkout hitting the same wall.
      */
-    if (!isStaff && shortages.length > 0) {
-      // A status label, never the exact `quantityOnHandSqm` — that figure is
-      // staff-only everywhere else in the app (doc 3.2), and a negotiation
-      // thread the customer can read back is no exception.
-      const lowStockThreshold = await getLowStockThreshold(this.prisma);
-      const cartItems = lineItems.map((line) => ({
-        productId: line.product.id,
-        productName: line.product.name,
-        requestedAreaSqm: line.quantity.purchasedArea,
-        availabilityNote:
-          STOCK_STATUS_LABEL[
-            stockStatusOf(
-              availableAreaSqmOf(
-                Number(line.product.quantityOnHandSqm),
-                Number(line.product.reservedAreaSqm),
-              ),
-              lowStockThreshold,
-            )
-          ],
-      }));
-
-      const negotiation = await this.cartNegotiations.submit(
-        {
-          items: cartItems,
-          body:
-            "I tried to place an order for this cart, but part of it isn't available right now — " +
-            "let's work out the details.",
-        },
-        actingUser,
-      );
-
-      await this.events.recordJourneyEvent({
-        userId: customerId,
-        sessionId: customerId,
-        stage: 'NEGOTIATED',
-        metadata: { negotiationId: negotiation.id, shortages: shortages.length },
-      });
-
-      return { orderCreated: false as const, negotiation };
-    }
+    const isWaitlisted = !isStaff && shortages.length > 0;
 
     const subtotal = lineItems.reduce((sum, line) => sum + line.totalPrice, 0);
-    // Held from the moment the order exists until it's confirmed onward,
-    // cancelled, or its payment verified (see `releaseReservedStock`) — not
-    // until stock is actually deducted, which still only happens at delivery.
-    const reservationExpiresAt = new Date(Date.now() + this.reservationWindowMs());
+    // Held from the moment a non-waitlisted order exists until it's confirmed
+    // onward, cancelled, or its payment verified (see `releaseReservedStock`)
+    // — not until stock is actually deducted, which still only happens at
+    // delivery. A waitlisted order gets this later, at promotion.
+    const reservationExpiresAt = isWaitlisted
+      ? null
+      : new Date(Date.now() + this.reservationWindowMs());
+
+    const shortageSummary = shortages
+      .map(
+        (s) =>
+          `${s.productName} (requested ${s.requestedAreaSqm} sqm, ${s.availableAreaSqm} sqm available)`,
+      )
+      .join('; ');
 
     const { order, systemMessage } = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
           orderNumber: this.generateOrderNumber(),
           type: dto.type,
-          status: OrderStatus.PENDING,
+          status: isWaitlisted ? OrderStatus.WAITLISTED : OrderStatus.PENDING,
           customerId,
           createdById: actingUser.id,
           createdByType: isStaff ? OrderCreatorType.STAFF : OrderCreatorType.CUSTOMER,
@@ -362,20 +432,25 @@ export class OrdersService {
           },
           statusEvents: {
             create: {
-              status: OrderStatus.PENDING,
+              status: isWaitlisted ? OrderStatus.WAITLISTED : OrderStatus.PENDING,
               createdById: actingUser.id,
-              note: 'Order placed.',
+              note: isWaitlisted
+                ? `Order accepted and waitlisted — waiting for enough stock: ${shortageSummary}.`
+                : 'Order placed.',
             },
           },
         },
         include: { items: true },
       });
 
-      for (const line of lineItems) {
-        await tx.product.update({
-          where: { id: line.product.id },
-          data: { reservedAreaSqm: { increment: line.quantity.purchasedArea } },
-        });
+      // Nothing to hold yet for a waitlisted order — see `promoteWaitlistedOrders`.
+      if (!isWaitlisted) {
+        for (const line of lineItems) {
+          await tx.product.update({
+            where: { id: line.product.id },
+            data: { reservedAreaSqm: { increment: line.quantity.purchasedArea } },
+          });
+        }
       }
 
       const message =
@@ -384,9 +459,12 @@ export class OrdersService {
               data: {
                 orderId: created.id,
                 author: OrderMessageAuthor.SYSTEM,
-                body:
-                  'Part of this order exceeds what is currently on hand. ' +
-                  'Our stock team will confirm what can be released now and when the rest can follow.',
+                body: isWaitlisted
+                  ? "This order is waitlisted: part of it exceeds what's currently on hand. " +
+                    "We'll email you the moment there's enough stock, and you'll have " +
+                    `${Math.round(this.reservationWindowMs() / 60_000)} minutes from then to complete payment.`
+                  : 'Part of this order exceeds what is currently on hand. ' +
+                    'Our stock team will confirm what can be released now and when the rest can follow.',
                 metadata: { shortages } as unknown as Prisma.InputJsonValue,
               },
             })
@@ -415,8 +493,21 @@ export class OrdersService {
         userId: customerId,
         sessionId: customerId,
         stage: 'NEGOTIATED',
-        metadata: { orderId: order.id, shortages: shortages.length },
+        metadata: { orderId: order.id, shortages: shortages.length, waitlisted: isWaitlisted },
       });
+    }
+
+    if (isWaitlisted) {
+      const customer = await this.prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+      if (customer.email) {
+        await this.notifications.sendOrderWaitlistedEmail(
+          customer.email,
+          customer.fullName,
+          order.orderNumber,
+          order.id,
+          customer.language,
+        );
+      }
     }
 
     return { orderCreated: true as const, order: { ...order, shortages } };
@@ -470,6 +561,21 @@ export class OrdersService {
     });
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
+
+    // A WAITLISTED order only ever leaves that status through
+    // `promoteWaitlistedOrders` — manually forcing it to PENDING (or beyond)
+    // here would skip reserving its stock, leaving a PENDING order with no
+    // hold and no payment clock. Cancelling it outright needs no reservation
+    // step, so that (and re-confirming WAITLISTED itself, a no-op) stays allowed.
+    if (
+      order.status === OrderStatus.WAITLISTED &&
+      dto.status !== OrderStatus.WAITLISTED &&
+      dto.status !== OrderStatus.CANCELLED
+    ) {
+      throw new BadRequestException(
+        'This order is waitlisted for stock and will be promoted automatically once enough is available. Cancel it instead if it should no longer wait.',
+      );
+    }
 
     if (dto.status === OrderStatus.DELIVERED) {
       // Delivering means the goods physically left the warehouse, so on-hand must cover them.
@@ -558,6 +664,7 @@ export class OrdersService {
         this.redis,
         order.items.map((item) => item.productId),
       );
+      await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
     }
 
     return result;
@@ -762,6 +869,7 @@ export class OrdersService {
         this.redis,
         order.items.map((item) => item.productId),
       );
+      await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
     }
 
     return updated;
