@@ -145,7 +145,7 @@ export class ChatbotService {
       })),
     });
 
-    return resolved.map(({ product }) => ({
+    return resolved.map(({ pick, product }) => ({
       id: product.id,
       name: product.name,
       image: product.image,
@@ -153,6 +153,8 @@ export class ChatbotService {
       link: `/products/${product.id}`,
       collection: product.collection.title,
       size: product.collection.size,
+      matchScore: pick.matchScore,
+      reason: pick.reason,
     }));
   }
 
