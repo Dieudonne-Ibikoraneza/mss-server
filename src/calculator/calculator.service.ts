@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
+import { availableAreaSqmOf } from '@/common/utils/stock-status';
 import { FloorPlanDto } from './dto/floor-plan.dto';
 
 @Injectable()
@@ -37,11 +38,15 @@ export class CalculatorService {
 
     // Stock is held in m²; convert to pieces here only to split this specific
     // request between what's on hand and what needs sourcing — never stored
-    // that way.
+    // that way. Other customers' unpaid orders can be holding part of it
+    // (`reservedAreaSqm`), so "from stock" here means "actually available to
+    // buy right now", not just what's physically on the shelf.
     const tileAreaSqm = Number(product.collection.tileAreaSqm);
-    const availablePieces = Math.floor(
-      Math.max(0, Number(product.quantityOnHandSqm)) / tileAreaSqm,
+    const availableAreaSqm = availableAreaSqmOf(
+      Number(product.quantityOnHandSqm),
+      Number(product.reservedAreaSqm),
     );
+    const availablePieces = Math.floor(availableAreaSqm / tileAreaSqm);
     const fromStockPieces = Math.min(availablePieces, quantity.totalPieces);
     const toSourcePieces = quantity.totalPieces - fromStockPieces;
 

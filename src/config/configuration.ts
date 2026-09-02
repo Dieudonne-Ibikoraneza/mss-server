@@ -6,6 +6,8 @@ export default () => ({
     corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
       .split(',')
       .map((origin) => origin.trim()),
+    /** Where staff/customer-facing links in emails point back to (e.g. "view your quotation"). */
+    clientUrl: process.env.CLIENT_URL ?? 'http://localhost:3000',
   },
   database: {
     url: process.env.DATABASE_URL,
@@ -35,6 +37,14 @@ export default () => ({
   throttle: {
     ttlMs: parseInt(process.env.THROTTLE_TTL_MS ?? '60000', 10),
     limit: parseInt(process.env.THROTTLE_LIMIT ?? '100', 10),
+  },
+  orders: {
+    /**
+     * How long a newly-placed order holds its stock before it's automatically
+     * cancelled and released, if it hasn't moved off PENDING (or had its
+     * payment verified) by then. See `OrdersService`'s reservation methods.
+     */
+    reservationMinutes: parseInt(process.env.ORDER_RESERVATION_MINUTES ?? '60', 10),
   },
   notifications: {
     emailProvider: process.env.EMAIL_PROVIDER ?? 'console',

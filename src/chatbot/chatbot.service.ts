@@ -2,7 +2,12 @@ import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ChatRole, Language, Prisma, RecommendationDecision, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
-import { canSeeExactStock, getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
+import {
+  availableAreaSqmOf,
+  canSeeExactStock,
+  getLowStockThreshold,
+  stockStatusOf,
+} from '@/common/utils/stock-status';
 import {
   CHAT_PROVIDER,
   type ChatProductCandidate,
@@ -82,7 +87,13 @@ export class ChatbotService {
       roomTypes: product.roomTypes,
       price: Number(product.price),
       currency: product.currency,
-      stockStatus: stockStatusOf(Number(product.quantityOnHandSqm), lowStockThreshold),
+      // Reservations held by other customers' unpaid orders count against
+      // this — see `availableAreaSqmOf`. The assistant shouldn't recommend
+      // tiles someone else already has a payment window locked on.
+      stockStatus: stockStatusOf(
+        availableAreaSqmOf(Number(product.quantityOnHandSqm), Number(product.reservedAreaSqm)),
+        lowStockThreshold,
+      ),
     }));
 
     const { reply, picks } = await this.chatProvider.reply({
@@ -202,16 +213,22 @@ export class ChatbotService {
 
     // This endpoint is public (anonymous visitors can compare products), so
     // exact stock/cost — staff-only everywhere else — must be stripped here too.
-    const products = rows.map(({ quantityOnHandSqm, averageCostPrice, ...rest }) => ({
-      ...rest,
-      stockStatus: stockStatusOf(Number(quantityOnHandSqm), lowStockThreshold),
-      ...(canSeeExactStock(viewerRole)
-        ? {
-            quantityOnHandSqm: Number(quantityOnHandSqm),
-            averageCostPrice: Number(averageCostPrice),
-          }
-        : {}),
-    }));
+    const products = rows.map(
+      ({ quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...rest }) => ({
+        ...rest,
+        stockStatus: stockStatusOf(
+          availableAreaSqmOf(Number(quantityOnHandSqm), Number(reservedAreaSqm)),
+          lowStockThreshold,
+        ),
+        ...(canSeeExactStock(viewerRole)
+          ? {
+              quantityOnHandSqm: Number(quantityOnHandSqm),
+              reservedAreaSqm: Number(reservedAreaSqm),
+              averageCostPrice: Number(averageCostPrice),
+            }
+          : {}),
+      }),
+    );
 
     await Promise.all(
       dto.productIds.map((productId) =>

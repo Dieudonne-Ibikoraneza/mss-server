@@ -2,8 +2,11 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   OrderCreatorType,
   OrderMessageAuthor,
@@ -20,6 +23,7 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import {
   STOCK_STATUS_LABEL,
+  availableAreaSqmOf,
   canSeeExactStock,
   getLowStockThreshold,
   stockStatusOf,
@@ -66,7 +70,7 @@ function sanitizeOrder<T extends { items: readonly { product: Record<string, unk
     items: order.items.map((item) => {
       if (!item.product) return item;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { quantityOnHandSqm, averageCostPrice, ...productRest } = item.product;
+      const { quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } = item.product;
       return { ...item, product: productRest };
     }),
   };
@@ -95,9 +99,12 @@ const purchasedAreaOf = (item: {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly config: ConfigService,
     private readonly events: EventsService,
     private readonly notifications: NotificationsService,
     private readonly negotiations: NegotiationsGateway,
@@ -120,6 +127,92 @@ export class OrdersService {
       throw new ForbiddenException('You do not have access to this order.');
     }
     return order;
+  }
+
+  /** How long a fresh order holds its stock — `ORDER_RESERVATION_MINUTES`, default 60. */
+  private reservationWindowMs(): number {
+    const minutes = this.config.get<number>('orders.reservationMinutes') ?? 60;
+    return minutes * 60_000;
+  }
+
+  /**
+   * Only the product side of a release — decrementing each item's hold back
+   * off `reservedAreaSqm`. Callers clear the order's own `reservationExpiresAt`
+   * themselves, folded into whatever `order.update` they're already doing
+   * (status change, quotation update, ...) so the object they return to the
+   * caller reflects the release immediately, instead of the write here
+   * landing a moment after the one whose result they hand back.
+   */
+  private async releaseReservedStock(
+    tx: Prisma.TransactionClient,
+    items: {
+      productId: string;
+      totalPieces: number;
+      product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+    }[],
+  ) {
+    for (const item of items) {
+      await tx.product.update({
+        where: { id: item.productId },
+        data: { reservedAreaSqm: { decrement: purchasedAreaOf(item) } },
+      });
+    }
+  }
+
+  /**
+   * The other half of stock reservations (doc-driven feature, no doc section
+   * number yet): a PENDING order that's still sitting on an expired hold gets
+   * auto-cancelled and its stock released, one order per transaction so a
+   * single bad row can't block the rest of the sweep. Runs every minute —
+   * cheap (an indexed `reservationExpiresAt` lookup) and keeps the customer's
+   * wait after the window lapses short.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async releaseExpiredReservations(): Promise<void> {
+    const expired = await this.prisma.order.findMany({
+      where: { status: OrderStatus.PENDING, reservationExpiresAt: { lte: new Date() } },
+      include: { items: { include: { product: true } }, customer: true },
+    });
+    if (expired.length === 0) return;
+
+    for (const order of expired) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await this.releaseReservedStock(tx, order.items);
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.CANCELLED,
+              reservationExpiresAt: null,
+              statusEvents: {
+                create: {
+                  status: OrderStatus.CANCELLED,
+                  note: 'Automatically cancelled — the payment window expired before this order advanced, so its stock hold was released.',
+                },
+              },
+            },
+          });
+        });
+
+        await invalidateProductsCache(
+          this.redis,
+          order.items.map((item) => item.productId),
+        );
+        if (order.customer.email) {
+          await this.notifications.sendOrderReservationExpiredEmail(
+            order.customer.email,
+            order.customer.fullName,
+            order.orderNumber,
+            order.customer.language,
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'unknown error';
+        this.logger.error(
+          `Failed to release expired reservation for order ${order.id}: ${message}`,
+        );
+      }
+    }
   }
 
   async create(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
@@ -153,13 +246,20 @@ export class OrdersService {
     });
 
     /**
-     * Stock isn't reserved on placement — `quantityOnHandSqm` only moves when
-     * the order is actually delivered (see `updateStatus` below) — so this is
-     * a point-in-time read, not a hold, and can still race a concurrent order.
+     * `quantityOnHandSqm` only moves when the order is actually delivered
+     * (see `updateStatus` below) — but `reservedAreaSqm` (other customers'
+     * still-open payment windows) is subtracted from it here, so this
+     * already accounts for stock currently on hold, not just on the shelf.
+     * Still a point-in-time read ahead of the transaction below, so it can
+     * in principle race a concurrent order for the last sliver of stock —
+     * accepted here the same way the rest of this codebase accepts it.
      */
     const shortages: StockShortage[] = [];
     for (const line of lineItems) {
-      const availableAreaSqm = Number(line.product.quantityOnHandSqm);
+      const availableAreaSqm = availableAreaSqmOf(
+        Number(line.product.quantityOnHandSqm),
+        Number(line.product.reservedAreaSqm),
+      );
       if (line.quantity.purchasedArea > availableAreaSqm) {
         shortages.push({
           productId: line.product.id,
@@ -199,7 +299,13 @@ export class OrdersService {
         requestedAreaSqm: line.quantity.purchasedArea,
         availabilityNote:
           STOCK_STATUS_LABEL[
-            stockStatusOf(Number(line.product.quantityOnHandSqm), lowStockThreshold)
+            stockStatusOf(
+              availableAreaSqmOf(
+                Number(line.product.quantityOnHandSqm),
+                Number(line.product.reservedAreaSqm),
+              ),
+              lowStockThreshold,
+            )
           ],
       }));
 
@@ -224,6 +330,10 @@ export class OrdersService {
     }
 
     const subtotal = lineItems.reduce((sum, line) => sum + line.totalPrice, 0);
+    // Held from the moment the order exists until it's confirmed onward,
+    // cancelled, or its payment verified (see `releaseReservedStock`) — not
+    // until stock is actually deducted, which still only happens at delivery.
+    const reservationExpiresAt = new Date(Date.now() + this.reservationWindowMs());
 
     const { order, systemMessage } = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -238,6 +348,7 @@ export class OrdersService {
           total: subtotal,
           notes: dto.notes,
           quotationStatus: QuotationStatus.AWAITING_REVIEW,
+          reservationExpiresAt,
           items: {
             create: lineItems.map((line) => ({
               productId: line.product.id,
@@ -259,6 +370,13 @@ export class OrdersService {
         },
         include: { items: true },
       });
+
+      for (const line of lineItems) {
+        await tx.product.update({
+          where: { id: line.product.id },
+          data: { reservedAreaSqm: { increment: line.quantity.purchasedArea } },
+        });
+      }
 
       const message =
         shortages.length > 0
@@ -355,7 +473,8 @@ export class OrdersService {
 
     if (dto.status === OrderStatus.DELIVERED) {
       // Delivering means the goods physically left the warehouse, so on-hand must cover them.
-      // Stock is never reserved on placement, so this is the first hard check against it.
+      // The reservation hold (see `releaseReservedStock`) is a separate, temporary figure —
+      // this is the hard check against what's actually sitting in the warehouse.
       const short = order.items.find(
         (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
       );
@@ -367,12 +486,22 @@ export class OrdersService {
       }
     }
 
+    // Leaving PENDING for any reason — confirmed onward or cancelled — ends
+    // the payment-window hold: either the order is now committed (stock
+    // still only actually moves at DELIVERED, below) or it's cancelled and
+    // the hold must go back to what other customers can buy.
+    const releasesReservation =
+      order.status === OrderStatus.PENDING &&
+      dto.status !== OrderStatus.PENDING &&
+      order.reservationExpiresAt !== null;
+
     const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.order.update({
         where: { id },
         data: {
           status: dto.status,
           deliveredAt: dto.status === OrderStatus.DELIVERED ? new Date() : undefined,
+          reservationExpiresAt: releasesReservation ? null : undefined,
           statusEvents: {
             create: { status: dto.status, note: dto.note, createdById: actingUser.id },
           },
@@ -411,8 +540,9 @@ export class OrdersService {
         });
       }
 
-      // CANCELLED has no stock side effect: nothing was ever reserved on
-      // placement, so there is nothing to release back.
+      if (releasesReservation) {
+        await this.releaseReservedStock(tx, order.items);
+      }
 
       return updated;
     });
@@ -423,6 +553,11 @@ export class OrdersService {
         order.items.map((item) => item.productId),
       );
       await this.notifications.notifyLowStock(order.items.map((item) => item.productId));
+    } else if (releasesReservation) {
+      await invalidateProductsCache(
+        this.redis,
+        order.items.map((item) => item.productId),
+      );
     }
 
     return result;
@@ -478,14 +613,17 @@ export class OrdersService {
    */
   async sendQuotation(id: string, dto: SendQuotationDto, actingUser: AuthenticatedUser) {
     this.assertCanManageQuotation(actingUser);
-    const order = await this.prisma.order.findUnique({ where: { id } });
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { customer: true },
+    });
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw new BadRequestException('This quotation has already been paid and verified.');
     }
 
-    return this.prisma.order.update({
+    const updated = await this.prisma.order.update({
       where: { id },
       data: {
         quotationStatus: QuotationStatus.QUOTATION_SENT,
@@ -496,6 +634,20 @@ export class OrdersService {
       },
       include: { delivery: true },
     });
+
+    // Best-effort, same as `notifyLowStock` — a mail failure must never
+    // undo the quotation that was already sent.
+    if (order.customer.email) {
+      await this.notifications.sendQuotationReadyEmail(
+        order.customer.email,
+        order.customer.fullName,
+        order.orderNumber,
+        order.id,
+        order.customer.language,
+      );
+    }
+
+    return updated;
   }
 
   /**
@@ -576,20 +728,43 @@ export class OrdersService {
 
   async verifyPayment(id: string, actingUser: AuthenticatedUser) {
     this.assertCanManageQuotation(actingUser);
-    const order = await this.prisma.order.findUnique({ where: { id } });
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { items: { include: { product: true } } },
+    });
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
       throw new BadRequestException('This order has no submitted payment awaiting verification.');
     }
 
-    return this.prisma.order.update({
-      where: { id },
-      data: {
-        quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
-        paymentVerifiedAt: new Date(),
-      },
+    const releasesReservation = order.reservationExpiresAt !== null;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Payment landing is itself "advancing" (doc: "verifying payment and
+      // processing") — release the hold here even if staff hasn't separately
+      // moved the fulfilment `status` off PENDING yet.
+      if (releasesReservation) {
+        await this.releaseReservedStock(tx, order.items);
+      }
+      return tx.order.update({
+        where: { id },
+        data: {
+          quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+          paymentVerifiedAt: new Date(),
+          reservationExpiresAt: releasesReservation ? null : undefined,
+        },
+      });
     });
+
+    if (releasesReservation) {
+      await invalidateProductsCache(
+        this.redis,
+        order.items.map((item) => item.productId),
+      );
+    }
+
+    return updated;
   }
 
   // --- Negotiation thread ----------------------------------------------------

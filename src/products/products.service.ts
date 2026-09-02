@@ -7,7 +7,12 @@ import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-calculator';
-import { canSeeExactStock, getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
+import {
+  availableAreaSqmOf,
+  canSeeExactStock,
+  getLowStockThreshold,
+  stockStatusOf,
+} from '@/common/utils/stock-status';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductSort, QueryProductsDto } from './dto/query-products.dto';
@@ -57,11 +62,15 @@ export class ProductsService {
     threshold: number,
     viewerRole?: Role,
   ) {
-    // quantityOnHandSqm/averageCostPrice are pulled out of `rest` explicitly —
-    // they live directly on the Product row now, so leaving them in `rest`
-    // would leak exact stock/cost to clients and the public catalog.
-    const { collection, quantityOnHandSqm, averageCostPrice, image, ...rest } = product;
+    // quantityOnHandSqm/reservedAreaSqm/averageCostPrice are pulled out of
+    // `rest` explicitly — they live directly on the Product row now, so
+    // leaving them in `rest` would leak exact stock/cost to clients and the
+    // public catalog.
+    const { collection, quantityOnHandSqm, reservedAreaSqm, averageCostPrice, image, ...rest } =
+      product;
     const onHandSqm = Number(quantityOnHandSqm);
+    const reservedSqm = Number(reservedAreaSqm);
+    const availableSqm = availableAreaSqmOf(onHandSqm, reservedSqm);
     const costPrice = Number(averageCostPrice);
 
     return {
@@ -69,7 +78,9 @@ export class ProductsService {
       image: await this.resolveImageUrl(image),
       size: collection.size,
       tileAreaSqm: Number(collection.tileAreaSqm),
-      stockStatus: stockStatusOf(onHandSqm, threshold),
+      // Reservations held by other customers' unpaid orders count against
+      // this — see `availableAreaSqmOf`.
+      stockStatus: stockStatusOf(availableSqm, threshold),
       ...(canSeeExactStock(viewerRole)
         ? {
             // Ground truth is m² — boxes/pieces alongside it are a display
@@ -78,6 +89,7 @@ export class ProductsService {
             // physically hold a partial piece, so any sliver of area smaller
             // than one tile just isn't a whole piece yet.
             quantityOnHandSqm: onHandSqm,
+            reservedAreaSqm: reservedSqm,
             onHandBreakdown: piecesFromAreaSqm(onHandSqm, {
               tileAreaSqm: Number(collection.tileAreaSqm),
               boxCoverageSqm: Number(rest.boxCoverageSqm),

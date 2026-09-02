@@ -306,6 +306,58 @@ async function main() {
       `),
     },
     {
+      key: 'QUOTATION_READY',
+      language: Language.EN,
+      subject: 'Your quotation for order {{orderNumber}} is ready',
+      bodyText:
+        'Hi {{fullName}},\n\nYour quotation for order {{orderNumber}} is ready to view. ' +
+        'Open it in your account to see the final total and pay:\n\n{{orderUrl}}',
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Your quotation for order <strong>{{orderNumber}}</strong> is ready to view.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">View quotation &amp; pay</a></p>
+      `),
+    },
+    {
+      key: 'QUOTATION_READY',
+      language: Language.RW,
+      subject: 'Igiciro cy\'ibicuruzwa ku ikurikira {{orderNumber}} kirakwiye',
+      bodyText:
+        'Muraho {{fullName}},\n\nIgiciro cy\'ikurikira {{orderNumber}} kirateguye kureba. ' +
+        'Fungura konti yawe kugira ngo urebe igiteranyo cya nyuma unishyure:\n\n{{orderUrl}}',
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Igiciro cy'ikurikira <strong>{{orderNumber}}</strong> kirateguye kureba.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba igiciro & wishyure</a></p>
+      `),
+    },
+    {
+      key: 'ORDER_RESERVATION_EXPIRED',
+      language: Language.EN,
+      subject: 'Order {{orderNumber}} was cancelled — the payment window expired',
+      bodyText:
+        'Hi {{fullName}},\n\nYour order {{orderNumber}} was automatically cancelled because it wasn\'t ' +
+        "paid within the reservation window, so the stock it held has been released. Feel free to place it again.",
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Your order <strong>{{orderNumber}}</strong> was automatically cancelled because it wasn't paid within the reservation window, so the stock it held has been released.</p>
+        <p style="font-size: 15px; margin: 0;">Feel free to place it again whenever you're ready.</p>
+      `),
+    },
+    {
+      key: 'ORDER_RESERVATION_EXPIRED',
+      language: Language.RW,
+      subject: 'Ikurikira {{orderNumber}} ryahagaritswe — igihe cyo kwishyura cyarangiye',
+      bodyText:
+        'Muraho {{fullName}},\n\nIkurikira ryawe {{orderNumber}} ryahagaritswe mu buryo bwikora kubera ' +
+        "ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe. Wowe wongere ugire ikurikira rishya igihe cyose ubishaka.",
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Ikurikira ryawe <strong>{{orderNumber}}</strong> ryahagaritswe mu buryo bwikora kubera ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe.</p>
+        <p style="font-size: 15px; margin: 0;">Wongere ugire ikurikira rishya igihe cyose ubishaka.</p>
+      `),
+    },
+    {
       key: 'STAFF_ACCOUNT_CREATED',
       language: Language.RW,
       subject: "Konti yawe y'abakozi kuri Magnificat Smart Space iratunganye",

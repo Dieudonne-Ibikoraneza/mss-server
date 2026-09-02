@@ -35,6 +35,18 @@ export const stockStatusOf = (
 };
 
 /**
+ * What's actually left to sell: on-hand minus whatever other PENDING orders
+ * are still holding during their payment window (`Order.reservationExpiresAt`
+ * / `Product.reservedAreaSqm` — see `OrdersService`). Physical stock never
+ * moves for a reservation, only this derived figure, so a second customer
+ * can't buy square metres someone else's unpaid order is already holding.
+ * Clamped at 0 — a reservation placed by staff overriding a shortage can push
+ * `reservedAreaSqm` past `quantityOnHandSqm`.
+ */
+export const availableAreaSqmOf = (quantityOnHandSqm: number, reservedAreaSqm: number): number =>
+  Math.max(0, quantityOnHandSqm - reservedAreaSqm);
+
+/**
  * The low-stock threshold is one GLOBAL number, in square metres
  * (admin-configurable via `PATCH /settings`), not a per-product field —
  * every product is compared against the same value. Read directly via

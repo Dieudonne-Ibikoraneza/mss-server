@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import configuration from './config/configuration';
 import { validationSchema } from './config/validation.schema';
@@ -47,6 +48,8 @@ import { HealthModule } from './health/health.module';
       }),
     }),
     EventEmitterModule.forRoot(),
+    // Registers the @Cron discovery used by OrdersService's reservation sweep.
+    ScheduleModule.forRoot(),
 
     PrismaModule,
     RedisModule,

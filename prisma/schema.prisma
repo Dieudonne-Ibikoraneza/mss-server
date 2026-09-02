@@ -288,6 +288,14 @@ model Product {
   // "stock.lowStockThreshold"), not a per-product field — see
   // `getLowStockThreshold()` in common/utils/stock-status.ts.
 
+  /// Total area currently held by unexpired, uncommitted PENDING orders (see
+  /// `Order.reservationExpiresAt`) — a temporary hold, not a physical stock
+  /// change, so a second customer can't buy the same square metres while the
+  /// first order's payment window is still open. `availableAreaSqmOf()` in
+  /// common/utils/stock-status.ts is what actually subtracts this from
+  /// `quantityOnHandSqm`; never exposed to non-staff viewers, same as it.
+  reservedAreaSqm Decimal @default(0) @db.Decimal(12, 4)
+
   stockAdjustments StockAdjustment[]
   cartItems        CartItem[]
   orderItems       OrderItem[]
@@ -385,6 +393,15 @@ model Order {
   paymentSubmittedAt DateTime?
   paymentVerifiedAt  DateTime?
 
+  /// While set, this order's items are counted against each product's
+  /// `reservedAreaSqm` — a payment window (`orders.reservationMinutes`
+  /// config, default 60 minutes) from placement. Cleared the moment the
+  /// order moves off PENDING or its payment is verified, whichever comes
+  /// first; a scheduled job cancels the order and releases the hold if it's
+  /// still set once this passes. Null once released (committed or expired) —
+  /// that's also how the sweep finds nothing left to do for this order twice.
+  reservationExpiresAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -397,6 +414,7 @@ model Order {
 
   @@index([customerId])
   @@index([status])
+  @@index([reservationExpiresAt])
 }
 
 model OrderItem {

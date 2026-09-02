@@ -1,7 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
-import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
+import {
+  availableAreaSqmOf,
+  getLowStockThreshold,
+  stockStatusOf,
+} from '@/common/utils/stock-status';
 import { UpsertCartItemDto } from './dto/upsert-cart-item.dto';
 
 @Injectable()
@@ -36,8 +40,14 @@ export class CartService {
       // same exact number is already returned to this same customer the
       // moment they place the order (`orders.service.ts#create`'s `shortages`).
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { collection, quantityOnHandSqm, averageCostPrice, ...productRest } = item.product;
-      const availableAreaSqm = Number(quantityOnHandSqm);
+      const { collection, quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } =
+        item.product;
+      // Reservations held by other customers' unpaid orders count against
+      // this — see `availableAreaSqmOf`.
+      const availableAreaSqm = availableAreaSqmOf(
+        Number(quantityOnHandSqm),
+        Number(reservedAreaSqm),
+      );
       const quantity = calculateTileQuantity(Number(item.areaSqm), {
         tileAreaSqm: Number(collection.tileAreaSqm),
         boxCoverageSqm: Number(productRest.boxCoverageSqm),

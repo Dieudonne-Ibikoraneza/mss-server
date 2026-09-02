@@ -11,6 +11,8 @@ export const EMAIL_TEMPLATE_KEYS = {
   OTP_VERIFICATION: 'OTP_VERIFICATION',
   STAFF_ACCOUNT_CREATED: 'STAFF_ACCOUNT_CREATED',
   LOW_STOCK_ALERT: 'LOW_STOCK_ALERT',
+  QUOTATION_READY: 'QUOTATION_READY',
+  ORDER_RESERVATION_EXPIRED: 'ORDER_RESERVATION_EXPIRED',
 } as const;
 
 /** PlatformSetting key that switches low-stock alerts on and off from the admin panel. */
@@ -259,6 +261,91 @@ export class NotificationsService implements OnModuleInit {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown error';
       this.logger.warn(`Failed to send low-stock alert: ${message}`);
+    }
+  }
+
+  /**
+   * "The quotation is ready" — sent once the stock team costs an order's
+   * transport and sends its quotation (`OrdersService#sendQuotation`), so the
+   * customer knows to come back and pay rather than polling the app. Doubles
+   * as the source for the frontend's global "quotation ready" dialog: the
+   * customer doesn't have to see this email to get that prompt (it re-checks
+   * `quotationStatus` on its own), but this is what tells them to go look.
+   * Best-effort, same reasoning as `notifyLowStock`: a mail failure must
+   * never undo the quotation that was already sent.
+   */
+  async sendQuotationReadyEmail(
+    email: string,
+    fullName: string,
+    orderNumber: string,
+    orderId: string,
+    language: Language = Language.EN,
+  ): Promise<void> {
+    try {
+      const template = await this.getTemplate(EMAIL_TEMPLATE_KEYS.QUOTATION_READY, language);
+      if (!template) {
+        this.logger.warn(
+          `EmailTemplate "${EMAIL_TEMPLATE_KEYS.QUOTATION_READY}" not found — skipping quotation-ready email. Run \`npm run prisma:seed\`.`,
+        );
+        return;
+      }
+
+      const orderUrl = `${this.config.get<string>('app.clientUrl')}/account/orders/${orderId}`;
+      const vars = { fullName, orderNumber, orderUrl };
+      const htmlVars = {
+        fullName: escapeHtml(fullName),
+        orderNumber: escapeHtml(orderNumber),
+        orderUrl,
+      };
+      await this.sendEmail(
+        email,
+        renderTemplate(template.subject, vars),
+        renderTemplate(template.bodyText, vars),
+        renderTemplate(template.bodyHtml, htmlVars),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Failed to send quotation-ready email for order ${orderNumber}: ${message}`);
+    }
+  }
+
+  /**
+   * The other end of a stock reservation (`OrdersService#releaseExpiredReservations`):
+   * the customer's payment window lapsed before the order advanced, so it was
+   * auto-cancelled and its stock released back for other customers to buy.
+   * Best-effort, same reasoning as `notifyLowStock`.
+   */
+  async sendOrderReservationExpiredEmail(
+    email: string,
+    fullName: string,
+    orderNumber: string,
+    language: Language = Language.EN,
+  ): Promise<void> {
+    try {
+      const template = await this.getTemplate(
+        EMAIL_TEMPLATE_KEYS.ORDER_RESERVATION_EXPIRED,
+        language,
+      );
+      if (!template) {
+        this.logger.warn(
+          `EmailTemplate "${EMAIL_TEMPLATE_KEYS.ORDER_RESERVATION_EXPIRED}" not found — skipping reservation-expired email. Run \`npm run prisma:seed\`.`,
+        );
+        return;
+      }
+
+      const vars = { fullName, orderNumber };
+      const htmlVars = { fullName: escapeHtml(fullName), orderNumber: escapeHtml(orderNumber) };
+      await this.sendEmail(
+        email,
+        renderTemplate(template.subject, vars),
+        renderTemplate(template.bodyText, vars),
+        renderTemplate(template.bodyHtml, htmlVars),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(
+        `Failed to send reservation-expired email for order ${orderNumber}: ${message}`,
+      );
     }
   }
 }
