@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
@@ -11,6 +11,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto, VideoPreviewDto } from './dto/media-preview.dto';
 import { UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
+import { RecommendationDecisionDto } from './dto/recommendation-decision.dto';
 
 @ApiTags('chatbot')
 @Controller('chatbot')
@@ -57,6 +58,16 @@ export class ChatbotController {
   @Post('preview/video')
   generateVideoPreview(@Body() dto: VideoPreviewDto) {
     return this.chatbotService.generateVideoPreview(dto);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Record customer feedback on one recommendation (like/dislike)',
+    description: 'Anonymous-safe; sets ACCEPTED, REJECTED, or clears back to PENDING.',
+  })
+  @Patch('recommendations/:id')
+  setRecommendationDecision(@Param('id') id: string, @Body() dto: RecommendationDecisionDto) {
+    return this.chatbotService.setRecommendationDecision(id, dto.decision);
   }
 
   @Public()

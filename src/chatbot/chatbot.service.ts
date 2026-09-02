@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { ChatRole, Language, Prisma, Role } from '@prisma/client';
+import { ChatRole, Language, Prisma, RecommendationDecision, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { canSeeExactStock, getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
@@ -134,19 +134,27 @@ export class ChatbotService {
 
     if (resolved.length === 0) return [];
 
-    await this.prisma.recommendation.createMany({
-      data: resolved.map(({ pick, product, rank }) => ({
-        userId,
-        sessionId,
-        productId: product.id,
-        rank,
-        matchScore: pick.matchScore,
-        reason: pick.reason,
-      })),
-    });
+    // Individual creates (not createMany) so each row's real id comes back —
+    // the customer's later like/dislike targets this exact recommendation,
+    // not just "some recommendation of this product".
+    const created = await this.prisma.$transaction(
+      resolved.map(({ pick, product, rank }) =>
+        this.prisma.recommendation.create({
+          data: {
+            userId,
+            sessionId,
+            productId: product.id,
+            rank,
+            matchScore: pick.matchScore,
+            reason: pick.reason,
+          },
+        }),
+      ),
+    );
 
-    return resolved.map(({ pick, product }) => ({
+    return resolved.map(({ pick, product }, index) => ({
       id: product.id,
+      recommendationId: created[index].id,
       name: product.name,
       image: product.image,
       price: Number(product.price),
@@ -156,6 +164,24 @@ export class ChatbotService {
       matchScore: pick.matchScore,
       reason: pick.reason,
     }));
+  }
+
+  /** Customer feedback on one recommendation — liked, disliked, or cleared back to pending. */
+  async setRecommendationDecision(id: string, decision: RecommendationDecision) {
+    await this.findRecommendation(id);
+    return this.prisma.recommendation.update({
+      where: { id },
+      data: {
+        decision,
+        decidedAt: decision === RecommendationDecision.PENDING ? null : new Date(),
+      },
+    });
+  }
+
+  private async findRecommendation(id: string) {
+    const recommendation = await this.prisma.recommendation.findUnique({ where: { id } });
+    if (!recommendation) throw new NotFoundException('Recommendation not found.');
+    return recommendation;
   }
 
   getHistory(conversationId: string) {
