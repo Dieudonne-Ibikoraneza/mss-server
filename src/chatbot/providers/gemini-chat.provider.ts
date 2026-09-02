@@ -8,7 +8,12 @@ import type {
 } from './chat-provider.interface';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const REQUEST_TIMEOUT_MS = 20_000;
+// The configured model (a "thinking" variant) has wide, genuinely observed
+// latency — anywhere from ~14s to ~38s in testing — well past the original
+// 20s budget, which was silently discarding most real replies into the
+// generic fallback. 60s covers that whole observed range with headroom,
+// without leaving a request to hang indefinitely.
+const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_REPLY_CHARS = 4_000;
 const MAX_PICKS = 6;
 

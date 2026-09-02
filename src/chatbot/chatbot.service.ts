@@ -151,6 +151,8 @@ export class ChatbotService {
       image: product.image,
       price: Number(product.price),
       link: `/products/${product.id}`,
+      collection: product.collection.title,
+      size: product.collection.size,
     }));
   }
 
