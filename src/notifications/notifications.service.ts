@@ -67,6 +67,17 @@ export class NotificationsService implements OnModuleInit {
       port,
       secure: port === 465,
       requireTLS: port !== 465,
+      // Nodemailer's own defaults leave `socketTimeout` unbounded, so a stalled
+      // SMTP connection hangs `sendMail` indefinitely. Every caller here awaits
+      // this inside a sequential loop over orders (reservation sweeps, waitlist
+      // promotion) — one stuck send stalls that whole cron tick, and since the
+      // schedule doesn't wait for the previous tick to finish, the next one
+      // fires anyway, piling up concurrent runs that each eventually want a
+      // database connection. Bounded timeouts turn a silent hang into a fast,
+      // logged failure instead.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
       auth: {
         user: this.config.get<string>('notifications.smtp.user'),
         // Gmail app passwords are shown with spaces for readability; strip them defensively.

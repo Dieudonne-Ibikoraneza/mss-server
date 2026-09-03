@@ -94,6 +94,19 @@ const purchasedAreaOf = (item: {
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
+  // Re-entrancy guards for the two cron sweeps below. Each processes its
+  // orders one at a time (a DB connection per iteration, not all at once),
+  // but if a single tick runs long — a stalled email send, a slow query
+  // against the pooled connection — the schedule fires the next tick anyway
+  // rather than waiting, and the two runs' DB work now overlaps. Repeat that
+  // over several ticks and it's enough concurrent transactions to exhaust the
+  // connection pool out from under a real customer's own checkout. Skipping
+  // an overlapping tick (logged, picked up again next interval) costs nothing
+  // — both sweeps are safety nets re-run frequently — and caps how much of
+  // the pool this background work can ever hold at once.
+  private releasingReservations = false;
+  private promotingWaitlistSweep = false;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
@@ -161,50 +174,59 @@ export class OrdersService {
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async releaseExpiredReservations(): Promise<void> {
-    const expired = await this.prisma.order.findMany({
-      where: { status: OrderStatus.PENDING, reservationExpiresAt: { lte: new Date() } },
-      include: { items: { include: { product: true } }, customer: true },
-    });
-    if (expired.length === 0) return;
+    if (this.releasingReservations) {
+      this.logger.warn('Skipping this reservation sweep — the previous one is still running.');
+      return;
+    }
+    this.releasingReservations = true;
+    try {
+      const expired = await this.prisma.order.findMany({
+        where: { status: OrderStatus.PENDING, reservationExpiresAt: { lte: new Date() } },
+        include: { items: { include: { product: true } }, customer: true },
+      });
+      if (expired.length === 0) return;
 
-    for (const order of expired) {
-      try {
-        await this.prisma.$transaction(async (tx) => {
-          await this.releaseReservedStock(tx, order.items);
-          await tx.order.update({
-            where: { id: order.id },
-            data: {
-              status: OrderStatus.CANCELLED,
-              reservationExpiresAt: null,
-              statusEvents: {
-                create: {
-                  status: OrderStatus.CANCELLED,
-                  note: 'Automatically cancelled — the payment window expired before this order advanced, so its stock hold was released.',
+      for (const order of expired) {
+        try {
+          await this.prisma.$transaction(async (tx) => {
+            await this.releaseReservedStock(tx, order.items);
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: OrderStatus.CANCELLED,
+                reservationExpiresAt: null,
+                statusEvents: {
+                  create: {
+                    status: OrderStatus.CANCELLED,
+                    note: 'Automatically cancelled — the payment window expired before this order advanced, so its stock hold was released.',
+                  },
                 },
               },
-            },
+            });
           });
-        });
 
-        await invalidateProductsCache(
-          this.redis,
-          order.items.map((item) => item.productId),
-        );
-        if (order.customer.email) {
-          await this.notifications.sendOrderReservationExpiredEmail(
-            order.customer.email,
-            order.customer.fullName,
-            order.orderNumber,
-            order.customer.language,
+          await invalidateProductsCache(
+            this.redis,
+            order.items.map((item) => item.productId),
+          );
+          if (order.customer.email) {
+            await this.notifications.sendOrderReservationExpiredEmail(
+              order.customer.email,
+              order.customer.fullName,
+              order.orderNumber,
+              order.customer.language,
+            );
+          }
+          await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'unknown error';
+          this.logger.error(
+            `Failed to release expired reservation for order ${order.id}: ${message}`,
           );
         }
-        await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'unknown error';
-        this.logger.error(
-          `Failed to release expired reservation for order ${order.id}: ${message}`,
-        );
       }
+    } finally {
+      this.releasingReservations = false;
     }
   }
 
@@ -307,7 +329,16 @@ export class OrdersService {
   /** Safety net in case an event-triggered promotion was ever missed — the real work happens above, event-driven. */
   @Cron(CronExpression.EVERY_5_MINUTES)
   private async promoteWaitlistedOrdersSweep(): Promise<void> {
-    await this.promoteWaitlistedOrders();
+    if (this.promotingWaitlistSweep) {
+      this.logger.warn('Skipping this waitlist sweep — the previous one is still running.');
+      return;
+    }
+    this.promotingWaitlistSweep = true;
+    try {
+      await this.promoteWaitlistedOrders();
+    } finally {
+      this.promotingWaitlistSweep = false;
+    }
   }
 
   async create(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
