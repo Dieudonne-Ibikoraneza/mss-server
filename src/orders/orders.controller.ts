@@ -12,6 +12,7 @@ import { QueryOrdersDto } from './dto/query-orders.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
+import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
 
 @ApiTags('orders')
 @ApiBearerAuth()
@@ -49,6 +50,17 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.ordersService.updateStatus(id, dto, user);
+  }
+
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiOperation({ summary: 'Edit order quantities (admin/stock)' })
+  @Patch(':id/items')
+  updateItems(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderItemsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.updateItems(id, dto, user);
   }
 
   @ApiOperation({

@@ -128,9 +128,14 @@ Every recommendation shown is persisted to the `Recommendation` table (rank,
 match score, reason), which is what `GET /analytics/tiles/recommendations`
 reports on.
 
-Image/video room-preview generation (`/chatbot/preview/image`,
-`/chatbot/preview/video`) is still behind a stub provider — wire a real
-provider under `AI_IMAGE_PROVIDER`/`AI_VIDEO_PROVIDER` the same way.
+Recommendation cards generate one Gemini room visualization per selected tile.
+Set `AI_IMAGE_PROVIDER=gemini` (the image provider reuses `AI_IMAGE_API_KEY`,
+or falls back to `AI_CHAT_API_KEY`) and `GEMINI_IMAGE_MODEL=gemini-2.5-flash-image`.
+The tile catalog image is sent as a visual reference, while the conversation
+brief supplies the room, layout, palette, and other customer details. If image
+generation fails, the recommendation still returns with its catalog image.
+The separate user-uploaded room image/video preview endpoints remain behind
+their existing stub providers.
 
 ## Email
 

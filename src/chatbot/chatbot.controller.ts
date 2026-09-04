@@ -12,29 +12,44 @@ import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto, VideoPreviewDto } from './dto/media-preview.dto';
 import { UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
 import { RecommendationDecisionDto } from './dto/recommendation-decision.dto';
+import { StartConversationDto } from './dto/start-conversation.dto';
+import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
 
 @ApiTags('chatbot')
 @Controller('chatbot')
 export class ChatbotController {
   constructor(private readonly chatbotService: ChatbotService) {}
 
-  @Public()
+  @ApiBearerAuth()
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Send a chat message',
-    description:
-      'Works for anonymous or logged-in visitors. Calls the AI provider, so this is rate-limited beyond the global default.',
+    description: 'Requires a signed-in customer — every conversation is tied to their account.',
   })
   @Post('messages')
-  sendMessage(@Body() dto: SendMessageDto, @CurrentUser('id') userId?: string) {
+  sendMessage(@Body() dto: SendMessageDto, @CurrentUser('id') userId: string) {
     return this.chatbotService.sendMessage(dto, userId);
   }
 
-  @Public()
-  @ApiOperation({ summary: 'Get conversation history' })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a new conversation ("project") for the signed-in customer' })
+  @Post('conversations')
+  startConversation(@Body() dto: StartConversationDto, @CurrentUser('id') userId: string) {
+    return this.chatbotService.startConversation(userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List the signed-in customer's conversations, most recent first" })
+  @Get('conversations')
+  listConversations(@CurrentUser('id') userId: string) {
+    return this.chatbotService.listConversations(userId);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get one conversation history (owner only)' })
   @Get('conversations/:id/messages')
-  getHistory(@Param('id') id: string) {
-    return this.chatbotService.getHistory(id);
+  getHistory(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.chatbotService.getHistory(id, userId);
   }
 
   @Public()
@@ -92,5 +107,17 @@ export class ChatbotController {
   @Delete('knowledge-base/:id')
   deleteKnowledgeBaseEntry(@Param('id') id: string) {
     return this.chatbotService.deleteKnowledgeBaseEntry(id);
+  }
+
+  @Roles(Role.ADMIN, Role.DATA_ANALYST)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'List questions customers asked after already receiving a recommendation (admin/marketing)',
+    description: "Cursor-paginated for infinite scroll — pass the last row's id back as `cursor`.",
+  })
+  @Get('admin/asked-questions')
+  listPostRecommendationInquiries(@Query() dto: ListPostRecommendationInquiriesDto) {
+    return this.chatbotService.listPostRecommendationInquiries(dto);
   }
 }

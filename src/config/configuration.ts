@@ -81,7 +81,8 @@ export default () => ({
     },
     image: {
       provider: process.env.AI_IMAGE_PROVIDER ?? 'stub',
-      apiKey: process.env.AI_IMAGE_API_KEY,
+      apiKey: process.env.AI_IMAGE_API_KEY || process.env.AI_CHAT_API_KEY,
+      model: process.env.GEMINI_IMAGE_MODEL ?? 'gemini-2.5-flash-image',
     },
     video: {
       provider: process.env.AI_VIDEO_PROVIDER ?? 'stub',

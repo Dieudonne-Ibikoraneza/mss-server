@@ -200,22 +200,23 @@ model User {
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  refreshTokens           RefreshToken[]
-  favorites               Favorite[]
-  roomDesigns             RoomDesign[]
-  cart                    Cart?
-  ordersAsCustomer        Order[]                  @relation("OrdersAsCustomer")
-  ordersCreated           Order[]                  @relation("OrdersCreatedBy")
-  stockAdjustments        StockAdjustment[]
-  tileEvents              TileEvent[]
-  journeyEvents           CustomerJourneyEvent[]
-  recommendations         Recommendation[]
-  quoteRequests           QuoteRequest[]
-  chatConversations       ChatConversation[]
-  orderStatusEvents       OrderStatusEvent[]
-  orderMessages           OrderMessage[]
-  cartNegotiations        CartNegotiation[]
-  cartNegotiationMessages CartNegotiationMessage[]
+  refreshTokens               RefreshToken[]
+  favorites                   Favorite[]
+  roomDesigns                 RoomDesign[]
+  cart                        Cart?
+  ordersAsCustomer            Order[]                     @relation("OrdersAsCustomer")
+  ordersCreated               Order[]                     @relation("OrdersCreatedBy")
+  stockAdjustments            StockAdjustment[]
+  tileEvents                  TileEvent[]
+  journeyEvents               CustomerJourneyEvent[]
+  recommendations             Recommendation[]
+  quoteRequests               QuoteRequest[]
+  chatConversations           ChatConversation[]
+  orderStatusEvents           OrderStatusEvent[]
+  orderMessages               OrderMessage[]
+  cartNegotiations            CartNegotiation[]
+  cartNegotiationMessages     CartNegotiationMessage[]
+  postRecommendationInquiries PostRecommendationInquiry[]
 
   @@index([role])
 }
@@ -289,7 +290,7 @@ model Product {
   /// that reports a cost: (oldAvgCost*oldQtySqm + newCost*newQtySqm) /
   /// (oldQtySqm+newQtySqm). This is what inventory valuation is priced at,
   /// never the selling price.
-  averageCostPrice Decimal @default(0) @db.Decimal(12, 4)
+  averageCostPrice  Decimal @default(0) @db.Decimal(12, 4)
   // Low-stock threshold is a single GLOBAL number (PlatformSetting
   // "stock.lowStockThreshold"), not a per-product field — see
   // `getLowStockThreshold()` in common/utils/stock-status.ts.
@@ -645,11 +646,15 @@ model ChatConversation {
   user      User?    @relation(fields: [userId], references: [id])
   sessionId String
   language  Language @default(EN)
+  /// Short label for the customer's "project" list (e.g. "Living room, Nyamata") —
+  /// set from their first message once the conversation actually starts.
+  title     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  messages  ChatMessage[]
-  mediaJobs ChatMediaJob[]
+  messages                    ChatMessage[]
+  mediaJobs                   ChatMediaJob[]
+  postRecommendationInquiries PostRecommendationInquiry[]
 
   @@index([userId])
   @@index([sessionId])
@@ -680,6 +685,25 @@ model ChatMediaJob {
   updatedAt      DateTime           @updatedAt
 
   @@index([conversationId])
+}
+
+/// Every customer message that comes in after the assistant has already made at
+/// least one recommendation in that conversation — kept separate from the full
+/// ChatMessage transcript so admin/marketing can browse "what people ask once
+/// they've seen picks" without wading through the whole conversation history.
+model PostRecommendationInquiry {
+  id             String           @id @default(uuid())
+  conversationId String
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?            @relation(fields: [userId], references: [id])
+  messageId      String
+  question       String
+  createdAt      DateTime         @default(now())
+
+  @@index([conversationId])
+  @@index([userId])
+  @@index([createdAt])
 }
 
 model KnowledgeBaseEntry {

@@ -31,6 +31,7 @@ import { QueryOrdersDto } from './dto/query-orders.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
+import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
 
@@ -699,6 +700,149 @@ export class OrdersService {
     }
 
     return result;
+  }
+
+  /**
+   * Applies quantities agreed with the customer during stock negotiation.
+   * Only an unconfirmed order can be revised: once processing has started the
+   * physical fulfilment must be changed through a new operational workflow.
+   */
+  async updateItems(id: string, dto: UpdateOrderItemsDto, actingUser: AuthenticatedUser) {
+    if (actingUser.role !== Role.ADMIN && actingUser.role !== Role.STOCK_MANAGER) {
+      throw new ForbiddenException('Only the stock team or an administrator can edit an order.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { items: { include: { product: { include: { collection: true } } } } },
+    });
+    if (!order) throw new NotFoundException('Order not found.');
+    if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.WAITLISTED) {
+      throw new BadRequestException('Only pending or waitlisted orders can be edited.');
+    }
+    if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
+      throw new BadRequestException('This order has already been paid and verified.');
+    }
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: dto.items.map((item) => item.productId) } },
+      include: { collection: true },
+    });
+    if (products.length !== dto.items.length) {
+      throw new BadRequestException('One or more products could not be found.');
+    }
+
+    const revisedItems = dto.items.map((item) => {
+      const product = products.find((candidate) => candidate.id === item.productId)!;
+      const quantity = calculateTileQuantity(item.areaSqm, {
+        tileAreaSqm: Number(product.collection.tileAreaSqm),
+        boxCoverageSqm: Number(product.boxCoverageSqm),
+        piecesPerBox: product.piecesPerBox,
+      });
+      const unitPrice = Number(product.price);
+      return {
+        product,
+        quantity,
+        unitPrice,
+        totalPrice: quantity.purchasedArea * unitPrice,
+      };
+    });
+
+    const oldHeldByProduct = new Map<string, number>();
+    for (const item of order.items) {
+      oldHeldByProduct.set(item.productId, (oldHeldByProduct.get(item.productId) ?? 0) + purchasedAreaOf(item));
+    }
+
+    const shortages: StockShortage[] = [];
+    for (const item of revisedItems) {
+      const available = availableAreaSqmOf(
+        Number(item.product.quantityOnHandSqm),
+        Math.max(0, Number(item.product.reservedAreaSqm) - (oldHeldByProduct.get(item.product.id) ?? 0)),
+      );
+      if (item.quantity.purchasedArea > available) {
+        shortages.push({
+          productId: item.product.id,
+          productName: item.product.name,
+          requestedAreaSqm: item.quantity.purchasedArea,
+          availableAreaSqm: available,
+        });
+      }
+    }
+
+    const isWaitlisted = shortages.length > 0;
+    const subtotal = revisedItems.reduce((sum, item) => sum + item.totalPrice, 0);
+    const nextStatus = isWaitlisted ? OrderStatus.WAITLISTED : OrderStatus.PENDING;
+    const nextReservationExpiry = isWaitlisted
+      ? null
+      : new Date(Date.now() + this.reservationWindowMs());
+    const productIds = [...new Set([...order.items.map((item) => item.productId), ...revisedItems.map((item) => item.product.id)])];
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const [productId, heldArea] of oldHeldByProduct) {
+        if (order.reservationExpiresAt !== null) {
+          await tx.product.update({ where: { id: productId }, data: { reservedAreaSqm: { decrement: heldArea } } });
+        }
+      }
+
+      if (!isWaitlisted) {
+        for (const item of revisedItems) {
+          await tx.product.update({
+            where: { id: item.product.id },
+            data: { reservedAreaSqm: { increment: item.quantity.purchasedArea } },
+          });
+        }
+      }
+
+      await tx.orderItem.deleteMany({ where: { orderId: id } });
+      await tx.order.update({
+        where: { id },
+        data: {
+          status: nextStatus,
+          subtotal,
+          total: subtotal,
+          notes: dto.notes ?? order.notes,
+          reservationExpiresAt: nextReservationExpiry,
+          quotationStatus: QuotationStatus.AWAITING_REVIEW,
+          transportFee: null,
+          transportFeeNote: null,
+          quotationSentAt: null,
+          quotationViewedAt: null,
+          paymentSubmittedAt: null,
+          paymentVerifiedAt: null,
+          items: {
+            create: revisedItems.map((item) => ({
+              productId: item.product.id,
+              requiredAreaSqm: item.quantity.requiredArea,
+              boxes: item.quantity.completeBoxes,
+              additionalPieces: item.quantity.remainingPieces,
+              totalPieces: item.quantity.totalPieces,
+              unitPrice: item.unitPrice,
+              totalPrice: item.totalPrice,
+            })),
+          },
+          statusEvents: {
+            create: {
+              status: nextStatus,
+              createdById: actingUser.id,
+              note: `Order quantities updated by ${actingUser.role === Role.ADMIN ? 'an administrator' : 'the stock team'}.`,
+            },
+          },
+          messages: {
+            create: {
+              author: OrderMessageAuthor.STAFF,
+              senderId: actingUser.id,
+              body: isWaitlisted
+                ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
+                : 'The order quantities were updated by the stock team. The quotation will be prepared again for the revised order.',
+              metadata: shortages.length > 0 ? { shortages } as unknown as Prisma.InputJsonValue : undefined,
+            },
+          },
+        },
+      });
+    });
+
+    await invalidateProductsCache(this.redis, productIds);
+    return this.findOne(id, actingUser);
   }
 
   // --- Delivery details ------------------------------------------------------
