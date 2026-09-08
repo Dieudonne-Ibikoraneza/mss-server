@@ -32,8 +32,13 @@ const SAFE_USER_SELECT = {
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.DATA_ANALYST, Role.ADMIN];
 
-/** Orders that count towards a customer's spend — anything not cancelled. */
-const SPENDING_STATUSES = { not: OrderStatus.CANCELLED } as const;
+/**
+ * Orders that count towards a customer's spend — only fully delivered ones.
+ * Pending, processing, shipped, waitlisted and cancelled orders are all
+ * excluded: nothing is "spent" until the customer has actually received it,
+ * so the customer directory and "Top Customers" rank on realised revenue.
+ */
+const SPENDING_STATUS = OrderStatus.DELIVERED;
 
 const searchFilter = (search?: string): Prisma.UserWhereInput =>
   search
@@ -208,7 +213,7 @@ export class UsersService {
         this.prisma.user.findMany({ where, select: SAFE_USER_SELECT }),
         this.prisma.order.groupBy({
           by: ['customerId'],
-          where: { status: SPENDING_STATUSES },
+          where: { status: SPENDING_STATUS },
           _sum: { total: true },
           _count: { _all: true },
           _max: { createdAt: true },
@@ -246,7 +251,7 @@ export class UsersService {
 
     const stats = await this.prisma.order.groupBy({
       by: ['customerId'],
-      where: { customerId: { in: items.map((item) => item.id) }, status: SPENDING_STATUSES },
+      where: { customerId: { in: items.map((item) => item.id) }, status: SPENDING_STATUS },
       _sum: { total: true },
       _count: { _all: true },
       _max: { createdAt: true },
@@ -277,7 +282,7 @@ export class UsersService {
 
     const [aggregate, orders, favorites, designs] = await Promise.all([
       this.prisma.order.aggregate({
-        where: { customerId: id, status: SPENDING_STATUSES },
+        where: { customerId: id, status: SPENDING_STATUS },
         _sum: { total: true },
         _count: { _all: true },
         _max: { createdAt: true },

@@ -19,6 +19,15 @@ const DETAIL_INCLUDE = {
 };
 
 /**
+ * Older SYSTEM notes (see `submit`) embedded the exact stock on hand —
+ * "…Polished (Only 997 m² on hand right now., requested 1000 sqm)." That
+ * figure is staff-only (doc 3.2); this drops just that fragment from a body
+ * before it reaches a customer, leaving "(requested 1000 sqm)" intact.
+ */
+const stripStockFigureFromBody = (body: string) =>
+  body.replace(/Only [\d.,]+\s*m² on hand right now\.,?\s*/gi, '');
+
+/**
  * Pre-order negotiation threads: a cart the customer couldn't check out
  * because it exceeded stock on hand, negotiated with the stock team before
  * any order exists. See `CartNegotiation` in schema.prisma for why this is
@@ -33,6 +42,34 @@ export class CartNegotiationsService {
 
   private isStaff(role: Role) {
     return STAFF_ROLES.includes(role) || role === Role.DATA_ANALYST;
+  }
+
+  /**
+   * Exact on-hand quantities are staff-only (doc 3.2) — but a shortage's
+   * `availabilityNote` carries the precise figure verbatim ("Only 997 m² on
+   * hand right now."). Staff get the thread untouched; the customer gets
+   * every item's note flattened to a non-numeric statement before it leaves
+   * the server, so the number never reaches their browser (message body,
+   * item list, or raw payload).
+   */
+  private presentFor<
+    T extends {
+      items: { availabilityNote: string }[];
+      messages: { body: string }[];
+    },
+  >(negotiation: T, actingUser: AuthenticatedUser): T {
+    if (this.isStaff(actingUser.role)) return negotiation;
+    return {
+      ...negotiation,
+      items: negotiation.items.map((item) => ({
+        ...item,
+        availabilityNote: 'Exceeds what we currently have in stock',
+      })),
+      messages: negotiation.messages.map((message) => ({
+        ...message,
+        body: stripStockFigureFromBody(message.body),
+      })),
+    };
   }
 
   private async assertAccess(id: string, actingUser: AuthenticatedUser) {
@@ -60,11 +97,10 @@ export class CartNegotiationsService {
       existing?.id ??
       (await this.prisma.cartNegotiation.create({ data: { customerId: actingUser.id } })).id;
 
+    // Customer-visible SYSTEM note: name the products and what the customer
+    // asked for, never the exact stock on hand (staff-only — see `presentFor`).
     const summary = dto.items
-      .map(
-        (item) =>
-          `${item.productName} (${item.availabilityNote}, requested ${item.requestedAreaSqm} sqm)`,
-      )
+      .map((item) => `${item.productName} (requested ${item.requestedAreaSqm} sqm)`)
       .join('; ');
 
     await this.prisma.$transaction([
@@ -107,16 +143,17 @@ export class CartNegotiationsService {
     for (const message of negotiation.messages.slice(-2)) {
       this.negotiations.emitMessage('cart', negotiationId, message);
     }
-    return negotiation;
+    return this.presentFor(negotiation, actingUser);
   }
 
   /** The calling customer's own thread, or `null` if they've never had one. */
   async mine(actingUser: AuthenticatedUser) {
-    return this.prisma.cartNegotiation.findFirst({
+    const negotiation = await this.prisma.cartNegotiation.findFirst({
       where: { customerId: actingUser.id },
       orderBy: { createdAt: 'desc' },
       include: DETAIL_INCLUDE,
     });
+    return negotiation ? this.presentFor(negotiation, actingUser) : null;
   }
 
   /**
@@ -138,10 +175,11 @@ export class CartNegotiationsService {
 
   async findOne(id: string, actingUser: AuthenticatedUser) {
     await this.assertAccess(id, actingUser);
-    return this.prisma.cartNegotiation.findUniqueOrThrow({
+    const negotiation = await this.prisma.cartNegotiation.findUniqueOrThrow({
       where: { id },
       include: DETAIL_INCLUDE,
     });
+    return this.presentFor(negotiation, actingUser);
   }
 
   /** Staff inbox: every customer's thread, most recently active first. */

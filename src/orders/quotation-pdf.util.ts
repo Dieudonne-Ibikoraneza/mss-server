@@ -225,20 +225,14 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
       .fontSize(9.5)
       .fillColor(GRAY_LABEL)
       .font('Helvetica')
-      .text('Pay the total above via either option, then mark this order as paid from the order screen.');
+      .text(
+        'Pay the total above via either option, then mark this order as paid from the order screen.',
+      );
     doc.moveDown(0.6);
 
     doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('MoMo Pay');
-    doc
-      .fontSize(10.5)
-      .fillColor(NAVY)
-      .font('Helvetica-Bold')
-      .text(PAYMENT_INSTRUCTIONS.momoCode);
-    doc
-      .fontSize(9)
-      .fillColor(GRAY_LABEL)
-      .font('Helvetica')
-      .text(PAYMENT_INSTRUCTIONS.momoName);
+    doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold').text(PAYMENT_INSTRUCTIONS.momoCode);
+    doc.fontSize(9).fillColor(GRAY_LABEL).font('Helvetica').text(PAYMENT_INSTRUCTIONS.momoName);
 
     doc.moveDown(0.6);
     doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('Bank transfer');

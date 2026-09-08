@@ -137,7 +137,6 @@ enum ChatRole {
 
 enum ChatMediaJobType {
   IMAGE_PREVIEW
-  VIDEO_PREVIEW
 }
 
 enum ChatMediaJobStatus {
@@ -399,6 +398,14 @@ model Order {
   quotationViewedAt  DateTime?
   paymentSubmittedAt DateTime?
   paymentVerifiedAt  DateTime?
+
+  /// Set the moment this order's items are physically removed from
+  /// `Product.quantityOnHandSqm` — at payment verification (`verifyPayment`),
+  /// since a paid order's tiles are the customer's, not stock we still hold.
+  /// Falls back to delivery for orders that never went through quotation
+  /// payment. Guards against a second deduction at DELIVERED and, while set,
+  /// tells a later cancellation to return the quantity to stock.
+  stockDeductedAt DateTime?
 
   /// While set, this order's items are counted against each product's
   /// `reservedAreaSqm` — a payment window (`orders.reservationMinutes`
@@ -669,6 +676,8 @@ model ChatMessage {
   attachments    Json?
   createdAt      DateTime         @default(now())
 
+  recommendations Recommendation[]
+
   @@index([conversationId])
 }
 
@@ -775,6 +784,23 @@ model Recommendation {
   sessionId  String
   productId  String
   product    Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// The exact assistant `ChatMessage` this pick was shown under — lets a
+  /// reloaded conversation re-attach the right product cards to the right
+  /// turn instead of just losing them, and groups a batch's like/dislike by
+  /// message rather than guessing from `sessionId` alone (one session can
+  /// hold several distinct recommendation batches). Nullable: older rows
+  /// predate this column, and it survives the message being gone (`SetNull`)
+  /// since the recommendation itself is still real analytics history either way.
+  messageId  String?
+  message    ChatMessage?           @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  /// Bare Supabase Storage path (e.g. "recommendations/<uuid>.png") for the
+  /// AI-generated room visualization — persisted once, the same way
+  /// `Product.image` is, specifically so a reloaded conversation can show it
+  /// again without a second (quota-consuming, non-deterministic) generation
+  /// call. Null when generation failed, wasn't configured, or predates this
+  /// column — the product's own catalog photo is the fallback everywhere
+  /// this is read, never a broken image.
+  imagePath  String?
   rank       Int
   matchScore Decimal                @db.Decimal(5, 2)
   reason     String?
@@ -786,6 +812,7 @@ model Recommendation {
 
   @@index([productId])
   @@index([sessionId])
+  @@index([messageId])
 }
 
 // ---------------------------------------------------------------------------

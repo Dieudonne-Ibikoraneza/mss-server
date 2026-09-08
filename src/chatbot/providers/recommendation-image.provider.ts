@@ -12,6 +12,14 @@ export interface RecommendationImageInput {
   };
 }
 
+export interface GeneratedImage {
+  /** Base64-encoded image bytes — never a `data:` URL. The caller decides
+   * whether to render it directly (a live turn, as a data URL) or persist it
+   * to storage (so a reloaded conversation doesn't need to regenerate it). */
+  data: string;
+  mimeType: string;
+}
+
 export interface RecommendationImageProvider {
-  generate(input: RecommendationImageInput): Promise<string | null>;
+  generate(input: RecommendationImageInput): Promise<GeneratedImage | null>;
 }

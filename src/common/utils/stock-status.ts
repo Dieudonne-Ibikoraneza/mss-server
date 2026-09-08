@@ -56,10 +56,28 @@ export const availableAreaSqmOf = (quantityOnHandSqm: number, reservedAreaSqm: n
 export const LOW_STOCK_THRESHOLD_SETTING = 'stock.lowStockThreshold';
 const DEFAULT_LOW_STOCK_THRESHOLD = 20;
 
+/**
+ * This one number is read on nearly every products/orders/chatbot/analytics
+ * request (every `stockStatusOf` call needs it) — over a database reached
+ * across the network rather than localhost, that's a whole extra round trip
+ * per request for a value that only ever changes via an admin editing
+ * settings. A short in-process cache trades a few seconds of staleness on
+ * that admin edit for cutting this query out of the hot path everywhere
+ * else. Module-level (not per-request or per-instance) on purpose — cheap,
+ * and every process converges within one TTL window regardless.
+ */
+const THRESHOLD_CACHE_TTL_MS = 15_000;
+let cachedThreshold: { value: number; expiresAt: number } | null = null;
+
 export async function getLowStockThreshold(prisma: PrismaService): Promise<number> {
+  if (cachedThreshold && cachedThreshold.expiresAt > Date.now()) {
+    return cachedThreshold.value;
+  }
   const row = await prisma.platformSetting.findUnique({
     where: { key: LOW_STOCK_THRESHOLD_SETTING },
   });
   const value = row?.value;
-  return typeof value === 'number' ? value : DEFAULT_LOW_STOCK_THRESHOLD;
+  const threshold = typeof value === 'number' ? value : DEFAULT_LOW_STOCK_THRESHOLD;
+  cachedThreshold = { value: threshold, expiresAt: Date.now() + THRESHOLD_CACHE_TTL_MS };
+  return threshold;
 }

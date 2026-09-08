@@ -1,7 +1,21 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
+import { memoryStorage } from 'multer';
 import { Public } from '@/common/decorators/public.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
@@ -9,11 +23,14 @@ import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { ChatbotService } from './chatbot.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
-import { ImagePreviewDto, VideoPreviewDto } from './dto/media-preview.dto';
+import { ImagePreviewDto } from './dto/media-preview.dto';
 import { UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
 import { RecommendationDecisionDto } from './dto/recommendation-decision.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
+
+const ROOM_PHOTO_MAX_SIZE = 15 * 1024 * 1024;
+const ROOM_PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 @ApiTags('chatbot')
 @Controller('chatbot')
@@ -59,20 +76,50 @@ export class ChatbotController {
     return this.chatbotService.compareProducts(dto, user?.id, user?.role);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Generate an AI room/tile image preview' })
-  @Post('preview/image')
-  generateImagePreview(@Body() dto: ImagePreviewDto) {
-    return this.chatbotService.generateImagePreview(dto);
+  @ApiOperation({
+    summary: "Upload a photo of the customer's own room",
+    description:
+      'Returns the bare storage path to submit as `roomImagePath` to POST /chatbot/preview/image.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @Post('preview/room-photo')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: ROOM_PHOTO_MAX_SIZE },
+      fileFilter: (_request, file, callback) => {
+        if (!ROOM_PHOTO_MIME_TYPES.includes(file.mimetype)) {
+          callback(new BadRequestException('Only JPEG, PNG, and WebP images are allowed.'), false);
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
+  uploadRoomPhoto(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException('A room photo is required in the "file" field.');
+    return this.chatbotService.uploadRoomPhoto(file);
   }
 
-  @Public()
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Generate an AI room/tile video preview' })
-  @Post('preview/video')
-  generateVideoPreview(@Body() dto: VideoPreviewDto) {
-    return this.chatbotService.generateVideoPreview(dto);
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: "Preview a tile on the customer's own room photo",
+    description:
+      'Edits the uploaded room photo (see POST /chatbot/preview/room-photo) to show the selected tile on its floor, and saves both the photo and the result into the conversation.',
+  })
+  @Post('preview/image')
+  generateImagePreview(@Body() dto: ImagePreviewDto, @CurrentUser('id') userId: string) {
+    return this.chatbotService.generateImagePreview(dto, userId);
   }
 
   @Public()

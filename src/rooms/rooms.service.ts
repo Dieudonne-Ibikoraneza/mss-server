@@ -9,6 +9,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { ProductsService } from '@/products/products.service';
 import { CreateRoomDto } from './dto/create-room.dto';
+import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
 
 /** Every design read carries its tiles, each tile's product (+ collection), the room, and the owner. */
@@ -32,8 +33,41 @@ export class RoomsService {
     return this.prisma.room.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
   }
 
+  /** Every room template, published or hidden — the admin content-management list (doc 3.10). */
+  findAllRoomsForAdmin() {
+    return this.prisma.room.findMany({ orderBy: { name: 'asc' } });
+  }
+
   createRoom(dto: CreateRoomDto) {
     return this.prisma.room.create({ data: dto });
+  }
+
+  async updateRoom(id: string, dto: UpdateRoomDto) {
+    const room = await this.prisma.room.findUnique({ where: { id } });
+    if (!room) throw new NotFoundException('Room not found.');
+    return this.prisma.room.update({ where: { id }, data: dto });
+  }
+
+  /**
+   * A room with saved customer designs against it can't be hard-deleted —
+   * `RoomDesign.roomId` has no cascade, so Postgres would just reject it —
+   * and silently cascading those designs away would be worse: they're a
+   * customer's own saved work, not disposable admin content. Hiding it
+   * (`updateRoom` with `isActive: false`) is the real "retire this room"
+   * action; deleting is only for one nobody ever actually used.
+   */
+  async deleteRoom(id: string) {
+    const room = await this.prisma.room.findUnique({ where: { id } });
+    if (!room) throw new NotFoundException('Room not found.');
+
+    const designCount = await this.prisma.roomDesign.count({ where: { roomId: id } });
+    if (designCount > 0) {
+      throw new BadRequestException(
+        `${designCount} saved customer design${designCount === 1 ? '' : 's'} still use this room — hide it instead of deleting.`,
+      );
+    }
+
+    await this.prisma.room.delete({ where: { id } });
   }
 
   /**

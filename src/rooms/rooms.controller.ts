@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { Public } from '@/common/decorators/public.decorator';
@@ -7,6 +7,7 @@ import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { RoomsService } from './rooms.service';
 import { CreateRoomDto } from './dto/create-room.dto';
+import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
 
 const STAFF_ROLES: Role[] = [Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER];
@@ -25,10 +26,37 @@ export class RoomsController {
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
+  @ApiOperation({ summary: 'List every room template, published or hidden (admin only)' })
+  @Get('admin')
+  findAllRoomsForAdmin() {
+    return this.roomsService.findAllRoomsForAdmin();
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a room template (admin only)' })
   @Post()
   createRoom(@Body() dto: CreateRoomDto) {
     return this.roomsService.createRoom(dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update a room template, including publish/hide (admin only)' })
+  @Patch(':id')
+  updateRoom(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
+    return this.roomsService.updateRoom(id, dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete a room template (admin only)',
+    description: 'Rejected if any saved customer design still uses it — hide it instead.',
+  })
+  @Delete(':id')
+  deleteRoom(@Param('id') id: string) {
+    return this.roomsService.deleteRoom(id);
   }
 
   @ApiBearerAuth()

@@ -98,7 +98,19 @@ export class CollectionsService {
   }
 
   private async withImageUrl(image: string | null) {
-    if (!image || /^https?:\/\//i.test(image)) return image;
+    if (!image) return image;
+    // Recovers the bare path if `image` was ever saved as one of our own
+    // (possibly expired) signed URLs instead of its bare path — see
+    // `ProductsService`'s identical guard for why this needs to self-heal
+    // rather than just trust whatever's stored.
+    const signedPathMatch = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(image);
+    if (signedPathMatch) {
+      return this.storage.getSignedUrl(
+        decodeURIComponent(signedPathMatch[1]),
+        COLLECTION_IMAGES_BUCKET,
+      );
+    }
+    if (/^https?:\/\//i.test(image)) return image;
     return this.storage.getSignedUrl(image, COLLECTION_IMAGES_BUCKET);
   }
 

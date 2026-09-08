@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
+import { StorageService } from '@/storage/storage.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import {
   availableAreaSqmOf,
@@ -10,7 +11,36 @@ import { UpsertCartItemDto } from './dto/upsert-cart-item.dto';
 
 @Injectable()
 export class CartService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
+
+  /**
+   * A cart line nests the full product row (name/image/price) for the page,
+   * but that row's `image` is the raw DB value — a bare private-blob path
+   * like "products/<uuid>.webp" a browser can't load. `ProductsService`
+   * re-signs it on every `/products` read; `cart/view` skipped that step, so
+   * the thumbnail was broken for every product whose image is an upload
+   * rather than an absolute seeded URL. Mirrors `ProductsService.resolveImageUrl`
+   * (a separate copy, same as the orders/collections/chatbot copies).
+   */
+  private async resolveImageUrl(image: string): Promise<string> {
+    const selfSignedPath = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(image);
+    if (selfSignedPath) {
+      try {
+        return await this.storage.getSignedUrl(decodeURIComponent(selfSignedPath[1]));
+      } catch {
+        return image;
+      }
+    }
+    if (/^https?:\/\//i.test(image)) return image;
+    try {
+      return await this.storage.getSignedUrl(image);
+    } catch {
+      return image;
+    }
+  }
 
   private async getOrCreateCart(userId: string) {
     return this.prisma.cart.upsert({
@@ -30,53 +60,56 @@ export class CartService {
       getLowStockThreshold(this.prisma),
     ]);
 
-    const lines = items.map((item) => {
-      // averageCostPrice pulled out explicitly — never shown to clients (doc
-      // 3.2). `quantityOnHandSqm` gets a narrow, deliberate exception right
-      // below: unlike the public catalog (badge-only), a cart line also
-      // carries the exact `availableAreaSqm` so the page can tell, live and
-      // without a round trip, whether the *quantity currently typed* — not
-      // just the product overall — exceeds stock. This isn't a new leak: the
-      // same exact number is already returned to this same customer the
-      // moment they place the order (`orders.service.ts#create`'s `shortages`).
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { collection, quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } =
-        item.product;
-      // Reservations held by other customers' unpaid orders count against
-      // this — see `availableAreaSqmOf`.
-      const availableAreaSqm = availableAreaSqmOf(
-        Number(quantityOnHandSqm),
-        Number(reservedAreaSqm),
-      );
-      const quantity = calculateTileQuantity(Number(item.areaSqm), {
-        tileAreaSqm: Number(collection.tileAreaSqm),
-        boxCoverageSqm: Number(productRest.boxCoverageSqm),
-        piecesPerBox: productRest.piecesPerBox,
-      });
-      // Priced by area, not by the box: `price` is what staff enter per m²,
-      // and `purchasedArea` is the actual area being billed (rounded up to
-      // whole pieces) — not the raw requested `areaSqm`.
-      const totalPrice = quantity.purchasedArea * Number(productRest.price);
-      return {
-        ...item,
-        // Mirrors `ProductsService`'s serialization — a cart line's product
-        // needs the same computed `size`/`stockStatus` every other product
-        // response carries, plus `availableAreaSqm` (see above) so the
-        // shortage banner tracks the actual requested quantity, not just the
-        // product's general stock badge.
-        product: {
-          ...productRest,
-          collection,
-          size: collection.size,
+    const lines = await Promise.all(
+      items.map(async (item) => {
+        // averageCostPrice pulled out explicitly — never shown to clients (doc
+        // 3.2). `quantityOnHandSqm` gets a narrow, deliberate exception right
+        // below: unlike the public catalog (badge-only), a cart line also
+        // carries the exact `availableAreaSqm` so the page can tell, live and
+        // without a round trip, whether the *quantity currently typed* — not
+        // just the product overall — exceeds stock. This isn't a new leak: the
+        // same exact number is already returned to this same customer the
+        // moment they place the order (`orders.service.ts#create`'s `shortages`).
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { collection, quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } =
+          item.product;
+        // Reservations held by other customers' unpaid orders count against
+        // this — see `availableAreaSqmOf`.
+        const availableAreaSqm = availableAreaSqmOf(
+          Number(quantityOnHandSqm),
+          Number(reservedAreaSqm),
+        );
+        const quantity = calculateTileQuantity(Number(item.areaSqm), {
           tileAreaSqm: Number(collection.tileAreaSqm),
-          stockStatus: stockStatusOf(availableAreaSqm, lowStockThreshold),
-          availableAreaSqm,
-        },
-        quantity,
-        totalPrice,
-        exceedsStock: quantity.purchasedArea > availableAreaSqm,
-      };
-    });
+          boxCoverageSqm: Number(productRest.boxCoverageSqm),
+          piecesPerBox: productRest.piecesPerBox,
+        });
+        // Priced by area, not by the box: `price` is what staff enter per m²,
+        // and `purchasedArea` is the actual area being billed (rounded up to
+        // whole pieces) — not the raw requested `areaSqm`.
+        const totalPrice = quantity.purchasedArea * Number(productRest.price);
+        return {
+          ...item,
+          // Mirrors `ProductsService`'s serialization — a cart line's product
+          // needs the same computed `size`/`stockStatus` every other product
+          // response carries, plus `availableAreaSqm` (see above) so the
+          // shortage banner tracks the actual requested quantity, not just the
+          // product's general stock badge.
+          product: {
+            ...productRest,
+            image: await this.resolveImageUrl(productRest.image),
+            collection,
+            size: collection.size,
+            tileAreaSqm: Number(collection.tileAreaSqm),
+            stockStatus: stockStatusOf(availableAreaSqm, lowStockThreshold),
+            availableAreaSqm,
+          },
+          quantity,
+          totalPrice,
+          exceedsStock: quantity.purchasedArea > availableAreaSqm,
+        };
+      }),
+    );
 
     return {
       cartId: cart.id,

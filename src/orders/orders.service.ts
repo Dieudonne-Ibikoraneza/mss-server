@@ -20,6 +20,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { EventsService } from '@/events/events.service';
 import { NotificationsService } from '@/notifications/notifications.service';
+import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { availableAreaSqmOf, canSeeExactStock } from '@/common/utils/stock-status';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
@@ -34,6 +35,7 @@ import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
+import { CartNegotiationsService } from '@/cart-negotiations/cart-negotiations.service';
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
 
@@ -78,6 +80,21 @@ export interface StockShortage {
 }
 
 /**
+ * Exact stock on hand is staff-only (doc 3.2). A shortage echoed back to a
+ * customer — the `POST /orders` response, or a SYSTEM message's `metadata` —
+ * keeps only the product and what they asked for, never `availableAreaSqm`
+ * (how much was actually on the shelf).
+ */
+const shortagesForCustomer = (
+  shortages: StockShortage[],
+): Omit<StockShortage, 'availableAreaSqm'>[] =>
+  shortages.map(({ productId, productName, requestedAreaSqm }) => ({
+    productId,
+    productName,
+    requestedAreaSqm,
+  }));
+
+/**
  * The actual area an order line ships, once its `totalPieces` (rounded up to
  * whole pieces at checkout) is converted back to m² via the product's own
  * packaging — what actually leaves stock, not the raw `requiredAreaSqm` the
@@ -115,7 +132,54 @@ export class OrdersService {
     private readonly events: EventsService,
     private readonly notifications: NotificationsService,
     private readonly negotiations: NegotiationsGateway,
+    private readonly cartNegotiations: CartNegotiationsService,
+    private readonly storage: StorageService,
   ) {}
+
+  /**
+   * An order item nests its full product row for the UI (name/image/price),
+   * but that row's `image` is the raw value from the DB — a bare private-blob
+   * path like "products/<uuid>.webp" that a browser can't load on its own.
+   * `ProductsService` re-signs it on every `/products` read; order responses
+   * skipped that step, so the product thumbnail on an order was always
+   * broken. Mirrors `ProductsService.resolveImageUrl` (kept a separate copy
+   * for the same reason the collections/chatbot copies are).
+   */
+  private async resolveImageUrl(image: string): Promise<string> {
+    const selfSignedPath = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(image);
+    if (selfSignedPath) {
+      try {
+        return await this.storage.getSignedUrl(decodeURIComponent(selfSignedPath[1]));
+      } catch {
+        return image;
+      }
+    }
+    if (/^https?:\/\//i.test(image)) return image;
+    try {
+      return await this.storage.getSignedUrl(image);
+    } catch {
+      return image;
+    }
+  }
+
+  /** `sanitizeOrder` (staff-field stripping) plus a fresh signed URL for each item's product image. */
+  private async serializeOrder<
+    T extends {
+      items: readonly { product: (Record<string, unknown> & { image?: unknown }) | null }[];
+    },
+  >(order: T, viewerRole: Role): Promise<T> {
+    const sanitized = sanitizeOrder(order, viewerRole);
+    const items = await Promise.all(
+      sanitized.items.map(async (item) => {
+        if (!item.product || typeof item.product.image !== 'string') return item;
+        return {
+          ...item,
+          product: { ...item.product, image: await this.resolveImageUrl(item.product.image) },
+        };
+      }),
+    );
+    return { ...sanitized, items };
+  }
 
   private generateOrderNumber() {
     return `ORD-${Date.now().toString(36).toUpperCase()}`;
@@ -142,6 +206,44 @@ export class OrdersService {
   }
 
   /**
+   * Applies every product's delta to one numeric column in a single
+   * statement instead of one round trip per line item. This database is
+   * reached over the network, not localhost (see `DATABASE_URL`) — a
+   * multi-item order otherwise pays its full round-trip latency once per
+   * line, on every place/cancel/promote/deliver/revise, which is most of
+   * why those endpoints feel slow. Positive deltas add, negative subtract;
+   * multiple entries for the same product are folded into one net change
+   * before the statement is built. `column` is a compile-time-checked
+   * literal, never caller-supplied data, so interpolating it directly is safe.
+   */
+  private async bulkAdjustProductArea(
+    tx: Prisma.TransactionClient,
+    column: 'reservedAreaSqm' | 'quantityOnHandSqm',
+    adjustments: { productId: string; deltaAreaSqm: number }[],
+  ): Promise<void> {
+    const netByProduct = new Map<string, number>();
+    for (const { productId, deltaAreaSqm } of adjustments) {
+      if (deltaAreaSqm === 0) continue;
+      netByProduct.set(productId, (netByProduct.get(productId) ?? 0) + deltaAreaSqm);
+    }
+    const entries = [...netByProduct.entries()];
+    if (entries.length === 0) return;
+
+    const columnRef = Prisma.raw(`"${column}"`);
+    const caseBranches = Prisma.join(
+      entries.map(([productId, delta]) => Prisma.sql`WHEN ${productId} THEN ${delta}::numeric`),
+      ' ',
+    );
+    const ids = Prisma.join(entries.map(([productId]) => productId));
+
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "Product"
+      SET ${columnRef} = ${columnRef} + (CASE "id" ${caseBranches} ELSE 0::numeric END)
+      WHERE "id" IN (${ids})
+    `);
+  }
+
+  /**
    * Only the product side of a release — decrementing each item's hold back
    * off `reservedAreaSqm`. Callers clear the order's own `reservationExpiresAt`
    * themselves, folded into whatever `order.update` they're already doing
@@ -157,12 +259,103 @@ export class OrdersService {
       product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
     }[],
   ) {
-    for (const item of items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { reservedAreaSqm: { decrement: purchasedAreaOf(item) } },
-      });
-    }
+    await this.bulkAdjustProductArea(
+      tx,
+      'reservedAreaSqm',
+      items.map((item) => ({ productId: item.productId, deltaAreaSqm: -purchasedAreaOf(item) })),
+    );
+  }
+
+  /**
+   * Physically removes an order's items from `quantityOnHandSqm` — the stock
+   * is now the customer's, not ours. Runs once per order, at whichever comes
+   * first of payment verification (`verifyPayment`) or delivery
+   * (`updateStatus`), gated by `Order.stockDeductedAt` so it never fires
+   * twice. Also lays down the OUTBOUND movement rows the stock report reads,
+   * and the customer's PURCHASED tile/journey events (a verified payment is
+   * the purchase, whether or not it's been delivered yet).
+   */
+  private async deductOrderStock(
+    tx: Prisma.TransactionClient,
+    order: {
+      customerId: string;
+      orderNumber: string;
+      items: {
+        productId: string;
+        totalPieces: number;
+        product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+      }[];
+    },
+    actingUserId: string,
+    reason: string,
+  ) {
+    await this.bulkAdjustProductArea(
+      tx,
+      'quantityOnHandSqm',
+      order.items.map((item) => ({
+        productId: item.productId,
+        deltaAreaSqm: -purchasedAreaOf(item),
+      })),
+    );
+    await tx.stockAdjustment.createMany({
+      data: order.items.map((item) => ({
+        productId: item.productId,
+        changeAreaSqm: -purchasedAreaOf(item),
+        type: StockMovementType.OUTBOUND,
+        reference: order.orderNumber,
+        reason,
+        adjustedById: actingUserId,
+      })),
+    });
+    await tx.tileEvent.createMany({
+      data: order.items.map((item) => ({
+        userId: order.customerId,
+        sessionId: order.customerId,
+        productId: item.productId,
+        type: 'PURCHASED' as const,
+      })),
+    });
+    await tx.customerJourneyEvent.create({
+      data: { userId: order.customerId, sessionId: order.customerId, stage: 'PURCHASED' },
+    });
+  }
+
+  /**
+   * The inverse of `deductOrderStock` — returns a cancelled order's items to
+   * `quantityOnHandSqm` when they had already been taken out (i.e.
+   * `stockDeductedAt` was set). An INBOUND movement row records the return.
+   */
+  private async returnOrderStock(
+    tx: Prisma.TransactionClient,
+    order: {
+      orderNumber: string;
+      items: {
+        productId: string;
+        totalPieces: number;
+        product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+      }[];
+    },
+    actingUserId: string,
+    reason: string,
+  ) {
+    await this.bulkAdjustProductArea(
+      tx,
+      'quantityOnHandSqm',
+      order.items.map((item) => ({
+        productId: item.productId,
+        deltaAreaSqm: purchasedAreaOf(item),
+      })),
+    );
+    await tx.stockAdjustment.createMany({
+      data: order.items.map((item) => ({
+        productId: item.productId,
+        changeAreaSqm: purchasedAreaOf(item),
+        type: StockMovementType.INBOUND,
+        reference: order.orderNumber,
+        reason,
+        adjustedById: actingUserId,
+      })),
+    });
   }
 
   /**
@@ -278,12 +471,14 @@ export class OrdersService {
           });
           if (stillShort) return false;
 
-          for (const item of order.items) {
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { reservedAreaSqm: { increment: purchasedAreaOf(item) } },
-            });
-          }
+          await this.bulkAdjustProductArea(
+            tx,
+            'reservedAreaSqm',
+            order.items.map((item) => ({
+              productId: item.productId,
+              deltaAreaSqm: purchasedAreaOf(item),
+            })),
+          );
 
           const reservationMinutes = Math.round(this.reservationWindowMs() / 60_000);
           await tx.order.update({
@@ -380,37 +575,97 @@ export class OrdersService {
      * Still a point-in-time read ahead of the transaction below, so it can
      * in principle race a concurrent order for the last sliver of stock —
      * accepted here the same way the rest of this codebase accepts it.
+     *
+     * Two different kinds of shortage, and only one of them is waitlist-able:
+     * - `available` (on hand minus what other customers' open orders are
+     *   already holding) covers it → no shortage at all, order goes straight
+     *   to PENDING below.
+     * - `available` doesn't cover it, but `quantityOnHandSqm` (the physical
+     *   total, ignoring anyone else's hold) does → temporary: another
+     *   customer's reservation freeing up (expiry, cancellation, or their
+     *   order being fulfilled) can cover this order later, so it's
+     *   waitlist-eligible (`shortages`).
+     * - not even `quantityOnHandSqm` covers it → no reservation release ever
+     *   fixes this, only a restock does. Nothing to wait on, so it isn't
+     *   waitlisted — see `impossibleShortages` below.
      */
     const shortages: StockShortage[] = [];
+    const impossibleShortages: StockShortage[] = [];
     for (const line of lineItems) {
+      const onHandAreaSqm = Number(line.product.quantityOnHandSqm);
       const availableAreaSqm = availableAreaSqmOf(
-        Number(line.product.quantityOnHandSqm),
+        onHandAreaSqm,
         Number(line.product.reservedAreaSqm),
       );
       if (line.quantity.purchasedArea > availableAreaSqm) {
-        shortages.push({
+        const shortage: StockShortage = {
           productId: line.product.id,
           productName: line.product.name,
           requestedAreaSqm: line.quantity.purchasedArea,
           availableAreaSqm,
-        });
+        };
+        if (line.quantity.purchasedArea > onHandAreaSqm) {
+          impossibleShortages.push(shortage);
+        } else {
+          shortages.push(shortage);
+        }
       }
     }
 
     /**
-     * A customer checking out their own cart when part of it exceeds stock
-     * on hand still gets a real order — accepted as a booking (doc-driven
-     * feature, no doc section number yet), not stalled behind a negotiation
-     * chat. It just starts life WAITLISTED instead of PENDING: no stock is
-     * held for it and no payment window runs, since there's nothing to hold
-     * yet. The moment enough stock frees up — a restock, or another
-     * customer's reservation expiring/being released — it's automatically
-     * promoted to PENDING (see `promoteWaitlistedOrders`), which is when the
-     * hold and the payment clock actually start, and the customer is emailed
-     * to come pay. The storefront's own "Place Order" button is already
-     * disabled in this state — this mostly exists for the cases that button
-     * can't catch: a stale cart snapshot, a concurrent order draining stock
-     * between page load and checkout, or a direct API call.
+     * A customer's own checkout that demands more of a product than exists
+     * on hand at all (not just more than is currently unreserved) can never
+     * be created as an order — waiting doesn't help here, only a restock
+     * does. Instead of an order, this opens/continues the customer's cart
+     * negotiation thread with the stock team (same thread the cart page's
+     * own pre-checkout shortage chat uses) and hands that back so the
+     * caller can route them straight into it.
+     *
+     * Staff placing an order *on a customer's behalf* (`dto.customerId`) are
+     * exempt — see the PENDING-with-shortage-message branch below, which
+     * still applies to them regardless of `impossibleShortages`.
+     */
+    if (!isStaff && impossibleShortages.length > 0) {
+      const allShortages = [...impossibleShortages, ...shortages];
+      const negotiation = await this.cartNegotiations.submit(
+        {
+          items: allShortages.map((shortage) => ({
+            productId: shortage.productId,
+            productName: shortage.productName,
+            requestedAreaSqm: shortage.requestedAreaSqm,
+            availabilityNote: `Only ${shortage.availableAreaSqm} m² on hand right now.`,
+          })),
+          body:
+            `I tried to place an order for ${allShortages.map((s) => s.productName).join(', ')}, ` +
+            "but it's more than you have in stock. Can you help?",
+        },
+        actingUser,
+      );
+      return { orderCreated: false as const, negotiation };
+    }
+
+    // Reachable only when staff are placing on a customer's behalf (the only
+    // way to get here with impossibleShortages non-empty) — fold it into the
+    // same shortage list so the message/summary/metadata below still surface
+    // it, and it's still reserved "regardless" alongside every other shortage.
+    shortages.push(...impossibleShortages);
+
+    /**
+     * A customer checking out their own cart when part of it exceeds what's
+     * currently available (but not what's on hand in total) still gets a
+     * real order — accepted as a booking (doc-driven feature, no doc section
+     * number yet), not stalled behind a negotiation chat. It just starts life
+     * WAITLISTED instead of PENDING: no stock is held for it and no payment
+     * window runs, since there's nothing to hold yet. The moment enough
+     * stock frees up — a restock, or another customer's reservation
+     * expiring/being released — it's automatically promoted to PENDING (see
+     * `promoteWaitlistedOrders`), which is when the hold and the payment
+     * clock actually start, and the customer is emailed to come pay. The
+     * storefront's own "Place Order" button lets this through deliberately
+     * (it only ever blocks on an empty cart) rather than pre-guessing which
+     * bucket a shortage falls into client-side — `quantityOnHandSqm` is
+     * staff-only (doc 3.2), so the customer's own cart has no way to tell a
+     * waitlist-able shortage from an impossible one before submitting.
      *
      * Staff placing an order *on a customer's behalf* (`dto.customerId`) keep
      * the old behavior: the order is created as PENDING right away, with the
@@ -477,12 +732,14 @@ export class OrdersService {
 
       // Nothing to hold yet for a waitlisted order — see `promoteWaitlistedOrders`.
       if (!isWaitlisted) {
-        for (const line of lineItems) {
-          await tx.product.update({
-            where: { id: line.product.id },
-            data: { reservedAreaSqm: { increment: line.quantity.purchasedArea } },
-          });
-        }
+        await this.bulkAdjustProductArea(
+          tx,
+          'reservedAreaSqm',
+          lineItems.map((line) => ({
+            productId: line.product.id,
+            deltaAreaSqm: line.quantity.purchasedArea,
+          })),
+        );
       }
 
       const message =
@@ -542,7 +799,13 @@ export class OrdersService {
       }
     }
 
-    return { orderCreated: true as const, order: { ...order, shortages } };
+    return {
+      orderCreated: true as const,
+      order: {
+        ...order,
+        shortages: isStaff ? shortages : shortagesForCustomer(shortages),
+      },
+    };
   }
 
   async findAll(query: QueryOrdersDto, actingUser: AuthenticatedUser) {
@@ -569,7 +832,7 @@ export class OrdersService {
     ]);
 
     return paginate(
-      items.map((order) => sanitizeOrder(order, actingUser.role)),
+      await Promise.all(items.map((order) => this.serializeOrder(order, actingUser.role))),
       total,
       query.page,
       query.limit,
@@ -583,7 +846,7 @@ export class OrdersService {
     if (!this.isStaff(actingUser.role) && order.customerId !== actingUser.id) {
       throw new ForbiddenException('You do not have access to this order.');
     }
-    return sanitizeOrder(order, actingUser.role);
+    return this.serializeOrder(order, actingUser.role);
   }
 
   async updateStatus(id: string, dto: UpdateOrderStatusDto, actingUser: AuthenticatedUser) {
@@ -609,10 +872,18 @@ export class OrdersService {
       );
     }
 
-    if (dto.status === OrderStatus.DELIVERED) {
-      // Delivering means the goods physically left the warehouse, so on-hand must cover them.
-      // The reservation hold (see `releaseReservedStock`) is a separate, temporary figure —
-      // this is the hard check against what's actually sitting in the warehouse.
+    // Stock normally leaves on-hand at payment verification now (see
+    // `verifyPayment`); `stockDeductedAt` records that. Delivery only has to
+    // move it for an order that never went through quotation payment.
+    const alreadyDeducted = order.stockDeductedAt !== null;
+    const deductsStock = dto.status === OrderStatus.DELIVERED && !alreadyDeducted;
+    // Cancelling a paid order: its tiles were taken out of on-hand at payment
+    // verification, so a cancellation puts them back.
+    const returnsStock = dto.status === OrderStatus.CANCELLED && alreadyDeducted;
+
+    if (deductsStock) {
+      // Only meaningful when this call is the one about to move on-hand —
+      // the goods physically left the warehouse, so on-hand must cover them.
       const short = order.items.find(
         (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
       );
@@ -625,59 +896,35 @@ export class OrdersService {
     }
 
     // Leaving PENDING for any reason — confirmed onward or cancelled — ends
-    // the payment-window hold: either the order is now committed (stock
-    // still only actually moves at DELIVERED, below) or it's cancelled and
-    // the hold must go back to what other customers can buy.
+    // the payment-window hold: either the order is now committed or it's
+    // cancelled and the hold must go back to what other customers can buy.
     const releasesReservation =
       order.status === OrderStatus.PENDING &&
       dto.status !== OrderStatus.PENDING &&
       order.reservationExpiresAt !== null;
+
+    const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.order.update({
         where: { id },
         data: {
           status: dto.status,
-          deliveredAt: dto.status === OrderStatus.DELIVERED ? new Date() : undefined,
+          deliveredAt: dto.status === OrderStatus.DELIVERED ? now : undefined,
           reservationExpiresAt: releasesReservation ? null : undefined,
+          stockDeductedAt: deductsStock ? now : returnsStock ? null : undefined,
           statusEvents: {
             create: { status: dto.status, note: dto.note, createdById: actingUser.id },
           },
         },
       });
 
-      if (dto.status === OrderStatus.DELIVERED) {
-        for (const item of order.items) {
-          const areaSqm = purchasedAreaOf(item);
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { quantityOnHandSqm: { decrement: areaSqm } },
-          });
-          // Leaves a trace in the movement feed the stock report reads from.
-          await tx.stockAdjustment.create({
-            data: {
-              productId: item.productId,
-              changeAreaSqm: -areaSqm,
-              type: StockMovementType.OUTBOUND,
-              reference: order.orderNumber,
-              reason: 'Order delivered',
-              adjustedById: actingUser.id,
-            },
-          });
-          await tx.tileEvent.create({
-            data: {
-              userId: order.customerId,
-              sessionId: order.customerId,
-              productId: item.productId,
-              type: 'PURCHASED',
-            },
-          });
-        }
-        await tx.customerJourneyEvent.create({
-          data: { userId: order.customerId, sessionId: order.customerId, stage: 'PURCHASED' },
-        });
+      if (deductsStock) {
+        await this.deductOrderStock(tx, order, actingUser.id, 'Order delivered');
       }
-
+      if (returnsStock) {
+        await this.returnOrderStock(tx, order, actingUser.id, 'Order cancelled — stock returned');
+      }
       if (releasesReservation) {
         await this.releaseReservedStock(tx, order.items);
       }
@@ -685,18 +932,17 @@ export class OrdersService {
       return updated;
     });
 
-    if (dto.status === OrderStatus.DELIVERED) {
-      await invalidateProductsCache(
-        this.redis,
-        order.items.map((item) => item.productId),
-      );
-      await this.notifications.notifyLowStock(order.items.map((item) => item.productId));
-    } else if (releasesReservation) {
-      await invalidateProductsCache(
-        this.redis,
-        order.items.map((item) => item.productId),
-      );
-      await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
+    const productIds = order.items.map((item) => item.productId);
+    if (deductsStock || returnsStock || releasesReservation) {
+      await invalidateProductsCache(this.redis, productIds);
+    }
+    if (deductsStock) {
+      await this.notifications.notifyLowStock(productIds);
+    }
+    if (returnsStock || releasesReservation) {
+      // Stock came back (a cancelled paid order) or a hold lapsed — either
+      // way there may now be room to promote a waitlisted order.
+      await this.promoteWaitlistedOrders(productIds);
     }
 
     return result;
@@ -750,14 +996,20 @@ export class OrdersService {
 
     const oldHeldByProduct = new Map<string, number>();
     for (const item of order.items) {
-      oldHeldByProduct.set(item.productId, (oldHeldByProduct.get(item.productId) ?? 0) + purchasedAreaOf(item));
+      oldHeldByProduct.set(
+        item.productId,
+        (oldHeldByProduct.get(item.productId) ?? 0) + purchasedAreaOf(item),
+      );
     }
 
     const shortages: StockShortage[] = [];
     for (const item of revisedItems) {
       const available = availableAreaSqmOf(
         Number(item.product.quantityOnHandSqm),
-        Math.max(0, Number(item.product.reservedAreaSqm) - (oldHeldByProduct.get(item.product.id) ?? 0)),
+        Math.max(
+          0,
+          Number(item.product.reservedAreaSqm) - (oldHeldByProduct.get(item.product.id) ?? 0),
+        ),
       );
       if (item.quantity.purchasedArea > available) {
         shortages.push({
@@ -775,23 +1027,32 @@ export class OrdersService {
     const nextReservationExpiry = isWaitlisted
       ? null
       : new Date(Date.now() + this.reservationWindowMs());
-    const productIds = [...new Set([...order.items.map((item) => item.productId), ...revisedItems.map((item) => item.product.id)])];
+    const productIds = [
+      ...new Set([
+        ...order.items.map((item) => item.productId),
+        ...revisedItems.map((item) => item.product.id),
+      ]),
+    ];
 
     await this.prisma.$transaction(async (tx) => {
-      for (const [productId, heldArea] of oldHeldByProduct) {
-        if (order.reservationExpiresAt !== null) {
-          await tx.product.update({ where: { id: productId }, data: { reservedAreaSqm: { decrement: heldArea } } });
+      const reservationDeltas: { productId: string; deltaAreaSqm: number }[] = [];
+      if (order.reservationExpiresAt !== null) {
+        for (const [productId, heldArea] of oldHeldByProduct) {
+          reservationDeltas.push({ productId, deltaAreaSqm: -heldArea });
         }
       }
-
       if (!isWaitlisted) {
         for (const item of revisedItems) {
-          await tx.product.update({
-            where: { id: item.product.id },
-            data: { reservedAreaSqm: { increment: item.quantity.purchasedArea } },
+          reservationDeltas.push({
+            productId: item.product.id,
+            deltaAreaSqm: item.quantity.purchasedArea,
           });
         }
       }
+      // One statement covers both the old holds' release and the new ones'
+      // reservation — `bulkAdjustProductArea` nets same-product entries
+      // (e.g. a line whose quantity just changed) into a single delta.
+      await this.bulkAdjustProductArea(tx, 'reservedAreaSqm', reservationDeltas);
 
       await tx.orderItem.deleteMany({ where: { orderId: id } });
       await tx.order.update({
@@ -834,7 +1095,10 @@ export class OrdersService {
               body: isWaitlisted
                 ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
                 : 'The order quantities were updated by the stock team. The quotation will be prepared again for the revised order.',
-              metadata: shortages.length > 0 ? { shortages } as unknown as Prisma.InputJsonValue : undefined,
+              metadata:
+                shortages.length > 0
+                  ? ({ shortages } as unknown as Prisma.InputJsonValue)
+                  : undefined,
             },
           },
         },
@@ -1021,6 +1285,28 @@ export class OrdersService {
     }
 
     const releasesReservation = order.reservationExpiresAt !== null;
+    // A verified payment makes the tiles the customer's — take them out of
+    // on-hand stock now, not at delivery. Skipped only if some earlier step
+    // already did it (there is none today, but the guard keeps it single-shot).
+    const deductsStock = order.stockDeductedAt === null;
+    const now = new Date();
+
+    if (deductsStock) {
+      // On-hand must physically cover the order before it's removed. It
+      // normally does — a non-waitlisted order was only placed because
+      // `available` covered it — but a manual stock correction since then
+      // could have eaten into it, and the stock team has to reconcile that
+      // before the payment can be verified.
+      const short = order.items.find(
+        (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
+      );
+      if (short) {
+        throw new BadRequestException(
+          `Cannot verify payment: "${short.product.name}" needs ${purchasedAreaOf(short)} m² but only ` +
+            `${Number(short.product.quantityOnHandSqm)} m² are on hand. Restock or adjust the order first.`,
+        );
+      }
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       // Payment landing is itself "advancing" (doc: "verifying payment and
@@ -1029,22 +1315,33 @@ export class OrdersService {
       if (releasesReservation) {
         await this.releaseReservedStock(tx, order.items);
       }
+      if (deductsStock) {
+        await this.deductOrderStock(tx, order, actingUser.id, 'Payment verified');
+      }
       return tx.order.update({
         where: { id },
         data: {
           quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
-          paymentVerifiedAt: new Date(),
+          paymentVerifiedAt: now,
           reservationExpiresAt: releasesReservation ? null : undefined,
+          stockDeductedAt: deductsStock ? now : undefined,
         },
       });
     });
 
+    const productIds = order.items.map((item) => item.productId);
+    if (releasesReservation || deductsStock) {
+      await invalidateProductsCache(this.redis, productIds);
+    }
+    if (deductsStock) {
+      await this.notifications.notifyLowStock(productIds);
+    }
     if (releasesReservation) {
-      await invalidateProductsCache(
-        this.redis,
-        order.items.map((item) => item.productId),
-      );
-      await this.promoteWaitlistedOrders(order.items.map((item) => item.productId));
+      // Releasing the hold and deducting the same area in one go leaves
+      // `available` (on-hand − reserved) unchanged, so there is rarely new
+      // room here — but a hold that had already lapsed (reservation cleared
+      // when staff advanced the status earlier) still frees this on-hand up.
+      await this.promoteWaitlistedOrders(productIds);
     }
 
     return updated;
@@ -1054,10 +1351,26 @@ export class OrdersService {
 
   async listMessages(id: string, actingUser: AuthenticatedUser) {
     await this.assertAccess(id, actingUser);
-    return this.prisma.orderMessage.findMany({
+    const messages = await this.prisma.orderMessage.findMany({
       where: { orderId: id },
       include: { sender: { select: { id: true, fullName: true, role: true } } },
       orderBy: { createdAt: 'asc' },
+    });
+
+    // A SYSTEM shortage message carries the full `shortages` (with
+    // `availableAreaSqm`) in its `metadata` for the stock team — strip that
+    // figure before the thread reaches the customer who owns the order.
+    if (this.isStaff(actingUser.role)) return messages;
+    return messages.map((message) => {
+      const metadata = message.metadata as { shortages?: unknown } | null;
+      if (!metadata || !Array.isArray(metadata.shortages)) return message;
+      return {
+        ...message,
+        metadata: {
+          ...metadata,
+          shortages: shortagesForCustomer(metadata.shortages as StockShortage[]),
+        },
+      };
     });
   }
 

@@ -49,8 +49,22 @@ export class ProductsService {
    * private with no public/listable access at all.
    */
   private async resolveImageUrl(image: string): Promise<string> {
+    // A product whose `image` was ever saved as one of our *own* signed
+    // URLs (e.g. pasted in from an upload preview instead of its bare
+    // path) would otherwise serve a dead link forever the moment that
+    // signature expires — recovering the bare path here and re-signing it
+    // fresh, instead of trusting the stored URL, makes that self-healing
+    // no matter how the bad value got there.
+    const selfSignedPath = this.extractOwnSignedPath(image);
+    if (selfSignedPath) return this.storage.getSignedUrl(selfSignedPath);
     if (/^https?:\/\//i.test(image)) return image;
     return this.storage.getSignedUrl(image);
+  }
+
+  /** Extracts the bare object path out of one of our own Supabase Storage signed URLs, or `null` if `value` isn't one. */
+  private extractOwnSignedPath(value: string): string | null {
+    const match = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(value);
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
   private static readonly ORDER_BY: Record<ProductSort, Prisma.ProductOrderByWithRelationInput> = {

@@ -130,7 +130,7 @@ reports on.
 
 Recommendation cards generate one Gemini room visualization per selected tile.
 Set `AI_IMAGE_PROVIDER=gemini` (the image provider reuses `AI_IMAGE_API_KEY`,
-or falls back to `AI_CHAT_API_KEY`) and `GEMINI_IMAGE_MODEL=gemini-2.5-flash-image`.
+or falls back to `AI_CHAT_API_KEY`) and `GEMINI_IMAGE_MODEL=gemini-3.1-flash-lite-image`.
 The tile catalog image is sent as a visual reference, while the conversation
 brief supplies the room, layout, palette, and other customer details. If image
 generation fails, the recommendation still returns with its catalog image.

@@ -33,7 +33,8 @@ export class CartNegotiationsController {
 
   @ApiOperation({
     summary: "Clear the calling customer's own negotiation thread",
-    description: 'Deletes it entirely, including its items and messages — a fresh start, not an archive.',
+    description:
+      'Deletes it entirely, including its items and messages — a fresh start, not an archive.',
   })
   @Delete('mine')
   clearMine(@CurrentUser() user: AuthenticatedUser) {

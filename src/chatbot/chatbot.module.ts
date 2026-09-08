@@ -10,18 +10,15 @@ import { GeminiChatProvider } from './providers/gemini-chat.provider';
 import { GeminiImageProvider } from './providers/gemini-image.provider';
 import { RECOMMENDATION_IMAGE_PROVIDER } from './providers/recommendation-image.provider';
 import { StubRecommendationImageProvider } from './providers/recommendation-image.stub';
-import {
-  StubImagePreviewProvider,
-  StubVideoPreviewProvider,
-} from './providers/stub-media.provider';
+import { ROOM_TILE_EDIT_PROVIDER } from './providers/room-tile-provider.interface';
+import { GeminiRoomTileProvider } from './providers/gemini-room-tile.provider';
+import { StubRoomTileProvider } from './providers/room-tile.stub';
 
 @Module({
   imports: [EventsModule, ConfigModule, StorageModule],
   controllers: [ChatbotController],
   providers: [
     ChatbotService,
-    StubImagePreviewProvider,
-    StubVideoPreviewProvider,
     StubRecommendationImageProvider,
     GeminiImageProvider,
     {
@@ -43,6 +40,14 @@ import {
         (config.get<string>('ai.image.provider') ?? 'stub') === 'gemini'
           ? new GeminiImageProvider(config)
           : new StubRecommendationImageProvider(),
+    },
+    {
+      provide: ROOM_TILE_EDIT_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        (config.get<string>('ai.image.provider') ?? 'stub') === 'gemini'
+          ? new GeminiRoomTileProvider(config)
+          : new StubRoomTileProvider(),
     },
   ],
 })

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   HearAboutUs,
   JourneyStage,
+  OrderCreatorType,
   OrderStatus,
   Prisma,
   RoomType,
@@ -35,6 +36,57 @@ const JOURNEY_ORDER: JourneyStage[] = [
 
 /** Orders that represent money actually earned, for every revenue figure below. */
 const EARNED_STATUSES: OrderStatus[] = [OrderStatus.SHIPPED, OrderStatus.DELIVERED];
+
+const CREATOR_TYPES: OrderCreatorType[] = [OrderCreatorType.CUSTOMER, OrderCreatorType.STAFF];
+
+/**
+ * "Sales" is tile revenue, never the delivery cost on top of it — `subtotal`
+ * is what the customer's tiles are worth, `total` is `subtotal + transportFee`
+ * once the quotation adds one. Every figure below reads `subtotal` for that
+ * reason; `transportFee` gets its own, separately-labelled total instead of
+ * folding into these.
+ */
+const orderSubtotal = (order: { subtotal: Prisma.Decimal }) => Number(order.subtotal);
+
+/**
+ * Shared by `overview()` and `sales()`: the Customer-vs-Staff split both a
+ * KPI card and the "Orders by Creator" chart need — one total per creator
+ * type for the card, the same split bucketed over the period for the chart.
+ */
+const creatorBreakdown = <T extends { createdAt: Date; createdByType: OrderCreatorType }>(
+  orders: (T & { subtotal: Prisma.Decimal })[],
+  resolved: ResolvedPeriod,
+) => {
+  const byCreator = CREATOR_TYPES.map((createdByType) => {
+    const rows = orders.filter((order) => order.createdByType === createdByType);
+    return {
+      createdByType,
+      count: rows.length,
+      total: rows.reduce((sum, order) => sum + orderSubtotal(order), 0),
+    };
+  });
+
+  const trendByType = new Map(
+    CREATOR_TYPES.map((createdByType) => [
+      createdByType,
+      bucketize(
+        orders.filter((order) => order.createdByType === createdByType),
+        resolved,
+        (order) => order.createdAt,
+        orderSubtotal,
+      ),
+    ]),
+  );
+  const customerTrend = trendByType.get(OrderCreatorType.CUSTOMER)!;
+  const staffTrend = trendByType.get(OrderCreatorType.STAFF)!;
+  const creatorTrend = customerTrend.map((bucket, index) => ({
+    label: bucket.label,
+    customer: bucket.value,
+    staff: staffTrend[index].value,
+  }));
+
+  return { byCreator, creatorTrend };
+};
 
 /**
  * Safe field readers for the free-form `metadata` JSON attached to journey
@@ -83,7 +135,7 @@ export class AnalyticsService {
     ] = await Promise.all([
       this.prisma.order.findMany({
         where: { status: { in: EARNED_STATUSES } },
-        select: { total: true, createdAt: true },
+        select: { subtotal: true, transportFee: true, createdAt: true, createdByType: true },
       }),
       this.prisma.order.count(),
       this.prisma.order.count({
@@ -111,15 +163,24 @@ export class AnalyticsService {
       this.conversionFunnel(),
     ]);
 
-    const totalSales = earnedOrders.reduce((sum, order) => sum + Number(order.total), 0);
+    const totalSales = earnedOrders.reduce((sum, order) => sum + orderSubtotal(order), 0);
+    const totalTransportFees = earnedOrders.reduce(
+      (sum, order) => sum + Number(order.transportFee ?? 0),
+      0,
+    );
     const accepted = recommendations.filter((row) => row.decision === 'ACCEPTED').length;
+    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved);
 
     return {
       period: resolved.period,
       totalSales,
+      // Visible separately from `totalSales`, deliberately — see `orderSubtotal`.
+      totalTransportFees,
       totalOrders,
       pendingOrders,
       averageOrderValue: earnedOrders.length ? totalSales / earnedOrders.length : 0,
+      byCreator,
+      creatorTrend,
       totalCustomers,
       repeatCustomers: repeatCustomers.length,
       repeatPurchaseRate: percent(repeatCustomers.length, totalCustomers),
@@ -140,12 +201,7 @@ export class AnalyticsService {
         (total, row) => total + Number(row.quantityOnHandSqm) * Number(row.averageCostPrice),
         0,
       ),
-      revenueTrend: bucketize(
-        earnedOrders,
-        resolved,
-        (order) => order.createdAt,
-        (order) => Number(order.total),
-      ),
+      revenueTrend: bucketize(earnedOrders, resolved, (order) => order.createdAt, orderSubtotal),
       funnel,
     };
   }
@@ -840,20 +896,20 @@ export class AnalyticsService {
       await Promise.all([
         this.prisma.order.findMany({
           where: { status: { in: EARNED_STATUSES }, createdAt: inRange },
-          select: { total: true, createdAt: true, createdByType: true },
+          select: { subtotal: true, transportFee: true, createdAt: true, createdByType: true },
         }),
         this.prisma.order.aggregate({
           where: {
             status: { in: EARNED_STATUSES },
             createdAt: { gte: previousFrom, lt: resolved.from },
           },
-          _sum: { total: true },
+          _sum: { subtotal: true },
         }),
         this.prisma.order.groupBy({
           by: ['status'],
           where: { createdAt: inRange },
           _count: { _all: true },
-          _sum: { total: true },
+          _sum: { subtotal: true },
         }),
         this.prisma.orderItem.groupBy({
           by: ['productId'],
@@ -869,8 +925,12 @@ export class AnalyticsService {
 
     const productIds = bestSelling.map((row) => row.productId);
     const products = await this.prisma.product.findMany({ where: { id: { in: productIds } } });
-    const totalSales = earnedOrders.reduce((sum, order) => sum + Number(order.total), 0);
-    const previousTotalSales = Number(previousTotal._sum.total ?? 0);
+    const totalSales = earnedOrders.reduce((sum, order) => sum + orderSubtotal(order), 0);
+    const totalTransportFees = earnedOrders.reduce(
+      (sum, order) => sum + Number(order.transportFee ?? 0),
+      0,
+    );
+    const previousTotalSales = Number(previousTotal._sum.subtotal ?? 0);
 
     const bestSellingTiles = bestSelling.map((row) => {
       const product = products.find((p: Product) => p.id === row.productId);
@@ -886,25 +946,16 @@ export class AnalyticsService {
     const byStatus = byStatusRaw.map((row) => ({
       status: row.status,
       count: row._count._all,
-      total: Number(row._sum.total ?? 0),
+      total: Number(row._sum.subtotal ?? 0),
     }));
-    const byCreator = (['CUSTOMER', 'STAFF'] as const).map((createdByType) => ({
-      createdByType,
-      count: earnedOrders.filter((order) => order.createdByType === createdByType).length,
-      total: earnedOrders
-        .filter((order) => order.createdByType === createdByType)
-        .reduce((sum, order) => sum + Number(order.total), 0),
-    }));
-    const trend = bucketize(
-      earnedOrders,
-      resolved,
-      (order) => order.createdAt,
-      (order) => Number(order.total),
-    );
+    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved);
+    const trend = bucketize(earnedOrders, resolved, (order) => order.createdAt, orderSubtotal);
 
     return {
       period: resolved.period,
       totalSales,
+      // Visible separately from `totalSales`, deliberately — see `orderSubtotal`.
+      totalTransportFees,
       previousTotalSales,
       percentChangeVsLastPeriod: percentChange(totalSales, previousTotalSales),
       totalOrders: earnedOrders.length,
@@ -912,6 +963,7 @@ export class AnalyticsService {
       ...repeatPurchase,
       byStatus,
       byCreator,
+      creatorTrend,
       bestSellingTiles,
       topPerformer: bestSellingTiles[0] ?? null,
       trend,
