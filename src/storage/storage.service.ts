@@ -248,4 +248,28 @@ export class StorageService {
 
     return data.signedUrl;
   }
+
+  /**
+   * Resolves a product/collection's stored `image` value to something a
+   * client can actually load: either an absolute URL as-is (seeded/external
+   * catalog photos), or a bare blob path (e.g. "products/<uuid>.png",
+   * possibly recovered from a stale signed URL saved by mistake) freshly
+   * re-signed via `getSignedUrl` — see that method's own doc for why a
+   * signed URL is never persisted or trusted from storage. Shared by every
+   * caller that serializes a product/tile for a response (`ProductsService`,
+   * `AnalyticsService`) so none of them can drift from this resolution and
+   * hand back a dead/unsigned path by omission.
+   */
+  async resolveImageUrl(image: string, bucket = PRODUCT_IMAGES_BUCKET): Promise<string> {
+    const selfSignedPath = this.extractOwnSignedPath(image);
+    if (selfSignedPath) return this.getSignedUrl(selfSignedPath, bucket);
+    if (/^https?:\/\//i.test(image)) return image;
+    return this.getSignedUrl(image, bucket);
+  }
+
+  /** Extracts the bare object path out of one of our own Supabase Storage signed URLs, or `null` if `value` isn't one. */
+  private extractOwnSignedPath(value: string): string | null {
+    const match = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(value);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
 }

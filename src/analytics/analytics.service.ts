@@ -10,6 +10,7 @@ import {
   type Product,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
+import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import {
   AnalyticsPeriod,
@@ -114,7 +115,31 @@ const multiplyIfBothNumbers = (a: number | undefined, b: number | undefined): nu
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
+
+  /**
+   * Resolves a batch of products' stored `image` (a bare private-bucket
+   * path, or an absolute URL for seeded/external photos — see
+   * `StorageService.resolveImageUrl`) to something a client can actually
+   * load, keyed by product id. Every analytics endpoint that echoes a
+   * product's image alongside engagement/sales numbers goes through this
+   * rather than forwarding the raw stored value, which resolves to nothing
+   * loadable for any product uploaded through the app.
+   */
+  private async resolveImageUrls(
+    products: { id: string; image: string | null }[],
+  ): Promise<Map<string, string | null>> {
+    const entries = await Promise.all(
+      products.map(async (product) => [
+        product.id,
+        product.image ? await this.storage.resolveImageUrl(product.image) : null,
+      ] as const),
+    );
+    return new Map(entries);
+  }
 
   // --- Cross-dashboard overview --------------------------------------------
 
@@ -381,6 +406,7 @@ export class AnalyticsService {
       products,
       total,
       events,
+      soldAreaByProduct,
       lowStockThreshold,
     ] = await Promise.all([
       leaderboardByType(TileEventType.VIEWED),
@@ -401,8 +427,21 @@ export class AnalyticsService {
         where: { createdAt: inRange },
         _count: { _all: true },
       }),
+      // `purchased` above (a TileEvent count — one per order line, same
+      // period) is a "times bought" tally, not a physical quantity. This is
+      // the actual area sold in the period, from the earned orders
+      // themselves, for the "Sold" column's sqm sub-line.
+      this.prisma.orderItem.groupBy({
+        by: ['productId'],
+        where: { order: { createdAt: inRange, status: { in: EARNED_STATUSES } } },
+        _sum: { requiredAreaSqm: true },
+      }),
       getLowStockThreshold(this.prisma),
     ]);
+    const soldAreaSqmOf = (productId: string) =>
+      Number(
+        soldAreaByProduct.find((row) => row.productId === productId)?._sum.requiredAreaSqm ?? 0,
+      );
 
     const leaderboardProductIds = [
       ...new Set(
@@ -413,18 +452,20 @@ export class AnalyticsService {
       where: { id: { in: leaderboardProductIds } },
       select: { id: true, name: true, image: true },
     });
+    const leaderboardImageById = await this.resolveImageUrls(leaderboardProducts);
     const productById = (id: string) => leaderboardProducts.find((p) => p.id === id);
     const attach = (rows: { productId: string; _count: { _all: number } }[]) =>
       rows.map((row) => ({
         productId: row.productId,
         name: productById(row.productId)?.name ?? 'Unknown',
-        image: productById(row.productId)?.image ?? null,
+        image: leaderboardImageById.get(row.productId) ?? null,
         count: row._count._all,
       }));
 
     const countOf = (productId: string, type: TileEventType) =>
       events.find((row) => row.productId === productId && row.type === type)?._count._all ?? 0;
 
+    const tableImageById = await this.resolveImageUrls(products);
     const rows = products.map((product) => {
       const productViewed = countOf(product.id, TileEventType.VIEWED);
       const productApplied = countOf(product.id, TileEventType.APPLIED);
@@ -434,7 +475,7 @@ export class AnalyticsService {
         productId: product.id,
         name: product.name,
         sku: product.sku,
-        image: product.image,
+        image: tableImageById.get(product.id) ?? product.image,
         collection: product.collection.title,
         size: product.collection.size,
         quantityOnHandSqm: Number(product.quantityOnHandSqm),
@@ -444,6 +485,7 @@ export class AnalyticsService {
         compared: countOf(product.id, TileEventType.COMPARED),
         saved: countOf(product.id, TileEventType.SAVED),
         purchased: productPurchased,
+        soldAreaSqm: soldAreaSqmOf(product.id),
         selectionRate: percent(productApplied, productViewed),
         purchaseConversion: percent(productPurchased, productViewed),
       };
@@ -925,6 +967,7 @@ export class AnalyticsService {
 
     const productIds = bestSelling.map((row) => row.productId);
     const products = await this.prisma.product.findMany({ where: { id: { in: productIds } } });
+    const bestSellingImageById = await this.resolveImageUrls(products);
     const totalSales = earnedOrders.reduce((sum, order) => sum + orderSubtotal(order), 0);
     const totalTransportFees = earnedOrders.reduce(
       (sum, order) => sum + Number(order.transportFee ?? 0),
@@ -937,7 +980,7 @@ export class AnalyticsService {
       return {
         productId: row.productId,
         name: product?.name ?? 'Unknown',
-        image: product?.image ?? null,
+        image: bestSellingImageById.get(row.productId) ?? null,
         revenue: Number(row._sum.totalPrice ?? 0),
         pieces: row._sum.totalPieces ?? 0,
       };
@@ -1043,6 +1086,7 @@ export class AnalyticsService {
       value: percent(bucketTotals[index].accepted, bucketTotals[index].count),
     }));
 
+    const recommendationImageById = await this.resolveImageUrls(products);
     const rows = products.map((product) => {
       const forProduct = grouped.filter((row) => row.productId === product.id);
       const displayed = forProduct.reduce((sum, row) => sum + row._count._all, 0);
@@ -1054,7 +1098,7 @@ export class AnalyticsService {
         productId: product.id,
         name: product.name,
         sku: product.sku,
-        image: product.image,
+        image: recommendationImageById.get(product.id) ?? product.image,
         collection: product.collection.title,
         size: product.collection.size,
         quantityOnHandSqm: Number(product.quantityOnHandSqm),
