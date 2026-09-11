@@ -170,7 +170,7 @@ async function main() {
       description:
         'Warm wood-inspired finish, versatile rectangular tiles for bathrooms, kitchens and feature walls.',
       suitableFor: SuitableFor.FLOOR,
-      roomTypes: [RoomType.LIVING_ROOM, RoomType.OUTDOOR],
+      roomTypes: [RoomType.LIVING_ROOM, RoomType.BEDROOM],
       // Cost ~9,500/box (15 pcs, 1.5 m²/box) → 6,333.33/m² average cost, vs. 15,000/m² selling price.
       quantityOnHandSqm: 1.5, // 15 pcs * 0.1 m²/pc
       averageCostPrice: 6333.33,
@@ -193,7 +193,7 @@ async function main() {
         'https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=900&q=85',
       description: 'Same 25×40cm size as the standard pack, sourced in 16-piece boxes.',
       suitableFor: SuitableFor.FLOOR,
-      roomTypes: [RoomType.LIVING_ROOM, RoomType.OUTDOOR],
+      roomTypes: [RoomType.LIVING_ROOM, RoomType.BEDROOM],
       // Cost ~9,800/box (16 pcs, 1.6 m²/box) → 6,125/m² average cost, vs. 15,400/m² selling price.
       quantityOnHandSqm: 4, // 40 pcs * 0.1 m²/pc
       averageCostPrice: 6125,
@@ -206,9 +206,6 @@ async function main() {
       { type: RoomType.BATHROOM, name: 'Bathroom' },
       { type: RoomType.KITCHEN, name: 'Kitchen' },
       { type: RoomType.BEDROOM, name: 'Bedroom' },
-      { type: RoomType.BALCONY, name: 'Balcony' },
-      { type: RoomType.STAIRS, name: 'Stairs' },
-      { type: RoomType.GATES, name: 'Gates' },
     ].map((room) =>
       prisma.room.findFirst({ where: { type: room.type } }).then((existing) =>
         existing
@@ -321,14 +318,50 @@ async function main() {
     {
       key: 'QUOTATION_READY',
       language: Language.RW,
-      subject: 'Igiciro cy\'ibicuruzwa ku ikurikira {{orderNumber}} kirakwiye',
+      subject: 'Igiciro cy\'ibicuruzwa ku itumizo {{orderNumber}} kirakwiye',
       bodyText:
-        'Muraho {{fullName}},\n\nIgiciro cy\'ikurikira {{orderNumber}} kirateguye kureba. ' +
+        'Muraho {{fullName}},\n\nIgiciro cy\'itumizo {{orderNumber}} kirateguye kureba. ' +
         'Fungura konti yawe kugira ngo urebe igiteranyo cya nyuma unishyure:\n\n{{orderUrl}}',
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">Igiciro cy'ikurikira <strong>{{orderNumber}}</strong> kirateguye kureba.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Igiciro cy'itumizo <strong>{{orderNumber}}</strong> kirateguye kureba.</p>
         <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba igiciro & wishyure</a></p>
+      `),
+    },
+    {
+      key: 'PAYMENT_RECEIPT',
+      language: Language.EN,
+      subject: 'Receipt for order {{orderNumber}}',
+      bodyText:
+        "Hi {{fullName}},\n\nWe've verified your payment for order {{orderNumber}}. Here's your receipt:\n\n" +
+        '{{items}}\n\nSubtotal: {{subtotal}}\nTransport fee: {{transportFee}}\nTotal paid: {{total}}\n\n' +
+        'View the full order anytime:\n\n{{orderUrl}}',
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">We've verified your payment for order <strong>{{orderNumber}}</strong>. Here's your receipt:</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 16px; line-height: 1.7;">{{items}}</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 4px;">Subtotal: {{subtotal}}</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 16px;">Transport fee: {{transportFee}}</p>
+        <p style="font-size: 15px; font-weight: 700; margin: 0 0 16px; color: #111827;">Total paid: {{total}}</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">View order</a></p>
+      `),
+    },
+    {
+      key: 'PAYMENT_RECEIPT',
+      language: Language.RW,
+      subject: 'Inyemezabwishyu ry\'itumizo {{orderNumber}}',
+      bodyText:
+        "Muraho {{fullName}},\n\nTwemeje ko wishyuye itumizo {{orderNumber}}. Dore inyemezabwishyu ryawe:\n\n" +
+        '{{items}}\n\nIgiteranyo mbere y\'ubwikorezi: {{subtotal}}\nAmafaranga y\'ubwikorezi: {{transportFee}}\nIgiteranyo cyose cyishyuwe: {{total}}\n\n' +
+        'Reba itumizo ryose igihe cyose ubishaka:\n\n{{orderUrl}}',
+      bodyHtml: emailShell(`
+        <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Twemeje ko wishyuye itumizo <strong>{{orderNumber}}</strong>. Dore inyemezabwishyu ryawe:</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 16px; line-height: 1.7;">{{items}}</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 4px;">Igiteranyo mbere y'ubwikorezi: {{subtotal}}</p>
+        <p style="font-size: 14px; color: #4b5563; margin: 0 0 16px;">Amafaranga y'ubwikorezi: {{transportFee}}</p>
+        <p style="font-size: 15px; font-weight: 700; margin: 0 0 16px; color: #111827;">Igiteranyo cyose cyishyuwe: {{total}}</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba itumizo</a></p>
       `),
     },
     {
@@ -347,14 +380,14 @@ async function main() {
     {
       key: 'ORDER_RESERVATION_EXPIRED',
       language: Language.RW,
-      subject: 'Ikurikira {{orderNumber}} ryahagaritswe — igihe cyo kwishyura cyarangiye',
+      subject: 'Itumizo {{orderNumber}} ryahagaritswe — igihe cyo kwishyura cyarangiye',
       bodyText:
-        'Muraho {{fullName}},\n\nIkurikira ryawe {{orderNumber}} ryahagaritswe mu buryo bwikora kubera ' +
-        "ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe. Wowe wongere ugire ikurikira rishya igihe cyose ubishaka.",
+        'Muraho {{fullName}},\n\nItumizo ryawe {{orderNumber}} ryahagaritswe mu buryo bwikora kubera ' +
+        "ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe. Wowe wongere ugire itumizo rishya igihe cyose ubishaka.",
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">Ikurikira ryawe <strong>{{orderNumber}}</strong> ryahagaritswe mu buryo bwikora kubera ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe.</p>
-        <p style="font-size: 15px; margin: 0;">Wongere ugire ikurikira rishya igihe cyose ubishaka.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Itumizo ryawe <strong>{{orderNumber}}</strong> ryahagaritswe mu buryo bwikora kubera ritarishyuwe mu gihe cyagenwe, ku buryo ububiko bwaryo bwasubijwe.</p>
+        <p style="font-size: 15px; margin: 0;">Wongere ugire itumizo rishya igihe cyose ubishaka.</p>
       `),
     },
     {
@@ -375,16 +408,16 @@ async function main() {
     {
       key: 'ORDER_WAITLISTED',
       language: Language.RW,
-      subject: 'Ikurikira {{orderNumber}} ryemejwe — ririteguriwe ububiko',
+      subject: 'Itumizo {{orderNumber}} ryemejwe — ririteguriwe ububiko',
       bodyText:
-        'Muraho {{fullName}},\n\nTwemeje ikurikira ryawe {{orderNumber}} — igice cyaryo nticyaboneka ' +
+        'Muraho {{fullName}},\n\nTwemeje itumizo ryawe {{orderNumber}} — igice cyaryo nticyaboneka ' +
         'ubu, ku buryo ryinjijwe ku rutonde rw\'abategereje. Tuzakumenyesha igihe ababiko buzaboneka, ' +
         "hanyuma uzahabwa igihe gito cyo kwishyura. Nta kindi ugomba gukora ubu:\n\n{{orderUrl}}",
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">Twemeje ikurikira ryawe <strong>{{orderNumber}}</strong> — igice cyaryo nticyaboneka ubu, ku buryo ryinjijwe ku rutonde rw'abategereje.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Twemeje itumizo ryawe <strong>{{orderNumber}}</strong> — igice cyaryo nticyaboneka ubu, ku buryo ryinjijwe ku rutonde rw'abategereje.</p>
         <p style="font-size: 15px; margin: 0 0 16px;">Tuzakumenyesha igihe ababiko buzaboneka, hanyuma uzahabwa igihe gito cyo kwishyura. Nta kindi ugomba gukora ubu.</p>
-        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba ikurikira</a></p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba itumizo</a></p>
       `),
     },
     {
@@ -404,13 +437,13 @@ async function main() {
     {
       key: 'ORDER_WAITLIST_AVAILABLE',
       language: Language.RW,
-      subject: 'Amakuru meza — ikurikira {{orderNumber}} riteguye kwishyurwa',
+      subject: 'Amakuru meza — itumizo {{orderNumber}} riteguye kwishyurwa',
       bodyText:
-        'Muraho {{fullName}},\n\nUbu ububiko buhagije buraboneka ku kurikira {{orderNumber}} — ryakuwe ku ' +
+        'Muraho {{fullName}},\n\nUbu ububiko buhagije buraboneka ku itumizo {{orderNumber}} — ryakuwe ku ' +
         "rutonde rw'abategereje. Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi:\n\n{{orderUrl}}",
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">Ubu ububiko buhagije buraboneka ku kurikira <strong>{{orderNumber}}</strong> — ryakuwe ku rutonde rw'abategereje.</p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Ubu ububiko buhagije buraboneka ku itumizo <strong>{{orderNumber}}</strong> — ryakuwe ku rutonde rw'abategereje.</p>
         <p style="font-size: 15px; margin: 0 0 16px;">Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi.</p>
         <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Ishyura nonaha</a></p>
       `),

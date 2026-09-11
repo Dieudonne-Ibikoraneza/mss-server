@@ -1276,7 +1276,7 @@ export class OrdersService {
     this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { items: { include: { product: true } } },
+      include: { items: { include: { product: true } }, customer: true },
     });
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
@@ -1342,6 +1342,27 @@ export class OrdersService {
       // room here — but a hold that had already lapsed (reservation cleared
       // when staff advanced the status earlier) still frees this on-hand up.
       await this.promoteWaitlistedOrders(productIds);
+    }
+
+    // Best-effort, same as `notifyLowStock` — a mail failure must never
+    // undo the payment verification that already happened.
+    if (order.customer.email) {
+      await this.notifications.sendPaymentReceiptEmail(
+        order.customer.email,
+        order.customer.fullName,
+        order.orderNumber,
+        order.id,
+        order.items.map((item) => ({
+          name: item.product.name,
+          areaSqm: Number(item.requiredAreaSqm),
+          totalPrice: Number(item.totalPrice),
+        })),
+        Number(order.subtotal),
+        Number(order.transportFee ?? 0),
+        Number(order.total),
+        order.currency,
+        order.customer.language,
+      );
     }
 
     return updated;

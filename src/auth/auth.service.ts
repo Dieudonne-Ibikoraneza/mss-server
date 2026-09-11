@@ -75,7 +75,7 @@ export class AuthService {
     };
     await this.redis.set(this.pendingKey(dto.email), pending, this.pendingTtlSeconds);
 
-    return this.otp.send(dto.email, 'email', 'register');
+    return this.otp.send(dto.email, 'email', 'register', pending.language);
   }
 
   /** Starts a login: sends a code to an existing, already-registered account. */
@@ -85,14 +85,14 @@ export class AuthService {
       throw new NotFoundException('No account found for this email. Please register first.');
     }
 
-    return this.otp.send(dto.email, 'email', 'login');
+    return this.otp.send(dto.email, 'email', 'login', user.language);
   }
 
   /** Resends whichever code is currently pending: a registration code, or a login code. */
   async resendOtp(dto: RequestOtpDto) {
     const pending = await this.redis.get<PendingRegistration>(this.pendingKey(dto.email));
     if (pending) {
-      return this.otp.send(dto.email, 'email', 'register');
+      return this.otp.send(dto.email, 'email', 'register', pending.language);
     }
 
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
@@ -102,7 +102,7 @@ export class AuthService {
       );
     }
 
-    return this.otp.send(dto.email, 'email', 'login');
+    return this.otp.send(dto.email, 'email', 'login', user.language);
   }
 
   /** Verifies the OTP and either completes a pending registration or logs an existing user in. */
