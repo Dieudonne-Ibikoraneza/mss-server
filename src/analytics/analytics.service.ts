@@ -672,8 +672,148 @@ export class AnalyticsService {
       ...new Set(distinctEvents.map((event) => event.userId).filter((id): id is string => !!id)),
     ];
     const actions = await this.journeyStageActions(stage, userIds, resolved, distinctEvents);
+    const signedInCustomers = new Set(
+      distinctEvents.filter((event) => event.userId).map((event) => event.userId),
+    ).size;
+    const metrics = this.journeyStageMetrics(stage, users.length, signedInCustomers, actions);
 
-    return { stage, period: resolved.period, userCount: users.length, users, actions };
+    return { stage, period: resolved.period, userCount: users.length, users, actions, metrics };
+  }
+
+  /**
+   * The KPI strip above a stage's drill-down ledger — deliberately different
+   * per stage (doc: "for others, it is the same functionality/features... if
+   * it is the other step, it should have different actions and everything"),
+   * computed entirely from the `actions` this same call already fetched (no
+   * extra queries). `key` is a stable identifier the frontend maps to a
+   * translated label and an icon; `value` is the raw number/string — never
+   * pre-formatted or pre-translated, same separation every other analytics
+   * endpoint here keeps.
+   */
+  private journeyStageMetrics(
+    stage: JourneyStage,
+    totalCustomers: number,
+    signedInCustomers: number,
+    actions: Awaited<ReturnType<AnalyticsService['journeyStageActions']>>,
+  ): { key: string; value: number | string }[] {
+    const base = [{ key: 'totalCustomers', value: totalCustomers }];
+
+    switch (stage) {
+      case JourneyStage.SAVED_DESIGN: {
+        const designs = actions as unknown as { detail: { sharedWithSales: boolean; tileCount: number } }[];
+        const shared = designs.filter((row) => row.detail.sharedWithSales).length;
+        const avgTiles = designs.length
+          ? designs.reduce((sum, row) => sum + row.detail.tileCount, 0) / designs.length
+          : 0;
+        return [
+          ...base,
+          { key: 'totalDesigns', value: designs.length },
+          { key: 'shareRate', value: percent(shared, designs.length) },
+          { key: 'avgTilesPerDesign', value: Math.round(avgTiles * 10) / 10 },
+        ];
+      }
+
+      case JourneyStage.REQUESTED_QUOTATION: {
+        const quotes = actions as unknown as { detail: { status: string; itemCount: number } }[];
+        const pending = quotes.filter((row) => row.detail.status === 'REQUESTED').length;
+        const avgItems = quotes.length
+          ? quotes.reduce((sum, row) => sum + row.detail.itemCount, 0) / quotes.length
+          : 0;
+        return [
+          ...base,
+          { key: 'totalQuotes', value: quotes.length },
+          { key: 'pendingQuotes', value: pending },
+          { key: 'avgItemsPerQuote', value: Math.round(avgItems * 10) / 10 },
+        ];
+      }
+
+      case JourneyStage.NEGOTIATED: {
+        const quoteThreads = actions.filter((row) => row.type === 'QUOTE_NEGOTIATING').length;
+        const orderThreads = actions.filter((row) => row.type === 'ORDER_NEGOTIATION').length;
+        return [
+          ...base,
+          { key: 'totalNegotiations', value: actions.length },
+          { key: 'quoteThreads', value: quoteThreads },
+          { key: 'orderThreads', value: orderThreads },
+        ];
+      }
+
+      case JourneyStage.PLACED_ORDER:
+      case JourneyStage.PURCHASED: {
+        const orders = actions as unknown as { detail: { total: number } }[];
+        const totalValue = orders.reduce((sum, row) => sum + row.detail.total, 0);
+        return [
+          ...base,
+          {
+            key: stage === JourneyStage.PLACED_ORDER ? 'totalOrders' : 'totalPurchases',
+            value: orders.length,
+          },
+          { key: 'totalValue', value: Math.round(totalValue) },
+          { key: 'avgValue', value: orders.length ? Math.round(totalValue / orders.length) : 0 },
+        ];
+      }
+
+      case JourneyStage.VIEWED_TILE:
+      case JourneyStage.APPLIED_TILE: {
+        const events = actions as unknown as { detail: { productId: string; productName: string } }[];
+        const byProduct = new Map<string, { name: string; count: number }>();
+        for (const row of events) {
+          const existing = byProduct.get(row.detail.productId);
+          if (existing) existing.count += 1;
+          else byProduct.set(row.detail.productId, { name: row.detail.productName, count: 1 });
+        }
+        const top = [...byProduct.values()].sort((a, b) => b.count - a.count)[0];
+        return [
+          ...base,
+          {
+            key: stage === JourneyStage.VIEWED_TILE ? 'totalViews' : 'totalApplications',
+            value: events.length,
+          },
+          { key: 'uniqueTiles', value: byProduct.size },
+          { key: 'topTile', value: top?.name ?? '—' },
+        ];
+      }
+
+      case JourneyStage.CREATED_ROOM: {
+        const rooms = actions as unknown as { detail: { roomType?: RoomType } | Prisma.JsonValue }[];
+        const byType = new Map<string, number>();
+        for (const row of rooms) {
+          const roomType =
+            row.detail && typeof row.detail === 'object' && 'roomType' in row.detail
+              ? (row.detail as { roomType?: RoomType }).roomType
+              : undefined;
+          if (!roomType) continue;
+          byType.set(roomType, (byType.get(roomType) ?? 0) + 1);
+        }
+        const top = [...byType.entries()].sort((a, b) => b[1] - a[1])[0];
+        return [
+          ...base,
+          { key: 'totalRoomsStarted', value: rooms.length },
+          { key: 'uniqueRoomTypes', value: byType.size },
+          { key: 'topRoomType', value: top?.[0] ?? '—' },
+        ];
+      }
+
+      case JourneyStage.ENTERED_DIMENSIONS: {
+        const entries = actions
+          .map((row) =>
+            row.detail && typeof row.detail === 'object' && 'areaSqm' in (row.detail as object)
+              ? Number((row.detail as { areaSqm?: unknown }).areaSqm)
+              : undefined,
+          )
+          .filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
+        const avgArea = entries.length ? entries.reduce((sum, v) => sum + v, 0) / entries.length : 0;
+        return [
+          ...base,
+          { key: 'totalEntries', value: actions.length },
+          { key: 'avgAreaSqm', value: Math.round(avgArea * 10) / 10 },
+          { key: 'maxAreaSqm', value: entries.length ? Math.round(Math.max(...entries) * 10) / 10 : 0 },
+        ];
+      }
+
+      default:
+        return [...base, { key: 'signedInCustomers', value: signedInCustomers }];
+    }
   }
 
   /**
@@ -699,9 +839,15 @@ export class AnalyticsService {
       case JourneyStage.SAVED_DESIGN: {
         const designs = await this.prisma.roomDesign.findMany({
           where: { userId: { in: userIds }, createdAt: inRange },
-          include: { room: { select: { type: true, name: true } }, tiles: true },
+          include: {
+            room: { select: { type: true, name: true } },
+            tiles: { include: { product: { select: { id: true, name: true, image: true } } } },
+          },
           orderBy: { createdAt: 'desc' },
         });
+        const tileImageById = await this.resolveImageUrls(
+          designs.flatMap((design) => design.tiles.map((tile) => tile.product)),
+        );
         return designs.map((design) => ({
           id: design.id,
           userId: design.userId,
@@ -714,6 +860,12 @@ export class AnalyticsService {
             designName: design.name,
             tileCount: design.tiles.length,
             sharedWithSales: design.sharedWithSales,
+            tiles: design.tiles.map((tile) => ({
+              surface: tile.surface,
+              productId: tile.product.id,
+              productName: tile.product.name,
+              image: tileImageById.get(tile.product.id) ?? tile.product.image,
+            })),
           },
         }));
       }
@@ -729,7 +881,12 @@ export class AnalyticsService {
           type: 'QUOTE_REQUESTED',
           summary: `Requested a quote (${Array.isArray(quote.items) ? quote.items.length : 0} item${Array.isArray(quote.items) && quote.items.length === 1 ? '' : 's'})`,
           createdAt: quote.createdAt,
-          detail: { status: quote.status, items: quote.items },
+          detail: {
+            status: quote.status,
+            items: quote.items,
+            itemCount: Array.isArray(quote.items) ? quote.items.length : 0,
+            orderId: quote.orderId,
+          },
         }));
       }
 
@@ -750,7 +907,7 @@ export class AnalyticsService {
             type: 'QUOTE_NEGOTIATING',
             summary: 'Quote moved into negotiation',
             createdAt: quote.updatedAt,
-            detail: { status: quote.status },
+            detail: { status: quote.status, orderId: quote.orderId },
           })),
           ...ordersWithMessages.map((order) => ({
             id: order.id,
@@ -760,6 +917,7 @@ export class AnalyticsService {
             createdAt: order.messages[0]?.createdAt ?? order.updatedAt,
             detail: {
               orderNumber: order.orderNumber,
+              orderId: order.id,
               lastMessage: order.messages[0]?.body ?? null,
             },
           })),
@@ -808,11 +966,20 @@ export class AnalyticsService {
       case JourneyStage.APPLIED_TILE: {
         const type =
           stage === JourneyStage.VIEWED_TILE ? TileEventType.VIEWED : TileEventType.APPLIED;
+        // Unlike the stages below (which all require a signed-in account —
+        // you can't place an order or save a design anonymously), browsing
+        // tiles doesn't. Matching by `userId` alone silently drops every
+        // anonymous session's views/applies, which is most of them — match
+        // by `sessionId` instead, the same identifier `fallbackEvents` (and
+        // CREATED_ROOM/ENTERED_DIMENSIONS below) already key off of, so an
+        // anonymous session's own tile events are still found.
+        const sessionIds = fallbackEvents.map((event) => event.sessionId);
         const tileEvents = await this.prisma.tileEvent.findMany({
-          where: { userId: { in: userIds }, type, createdAt: inRange },
+          where: { sessionId: { in: sessionIds }, type, createdAt: inRange },
           include: { product: { select: { id: true, name: true, image: true } } },
           orderBy: { createdAt: 'desc' },
         });
+        const tileImageById = await this.resolveImageUrls(tileEvents.map((event) => event.product));
         return tileEvents.map((event) => ({
           id: event.id,
           userId: event.userId,
@@ -822,7 +989,7 @@ export class AnalyticsService {
           detail: {
             productId: event.productId,
             productName: event.product.name,
-            image: event.product.image,
+            image: tileImageById.get(event.productId) ?? event.product.image,
           },
         }));
       }

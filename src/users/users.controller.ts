@@ -9,6 +9,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryCustomersDto, QueryStaffDto } from './dto/query-users.dto';
+import { PaginationDto } from '@/common/dto/pagination.dto';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -54,8 +55,8 @@ export class UsersController {
     summary: 'Get one customer with spend summary and recent orders (admin/sales/stock/analyst)',
   })
   @Get('customers/:id')
-  findCustomer(@Param('id') id: string) {
-    return this.usersService.findCustomer(id);
+  findCustomer(@Param('id') id: string, @Query() query: PaginationDto) {
+    return this.usersService.findCustomer(id, query.page, query.limit);
   }
 
   @Roles(Role.ADMIN)

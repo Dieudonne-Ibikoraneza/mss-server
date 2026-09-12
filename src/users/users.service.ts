@@ -273,14 +273,24 @@ export class UsersService {
   }
 
   /** A single customer with their spend summary and recent orders, for the detail screen. */
-  async findCustomer(id: string, recentOrders = 10) {
+  /**
+   * `page`/`limit` page the orders list only — every other figure here
+   * (`orderCount`, `lifetimeSpend`, the first/last-order dates) is a lifetime
+   * aggregate over ALL of the customer's orders, independent of which page
+   * of the list is being viewed. `ordersTotal` is the count the frontend
+   * actually paginates against: unlike `orderCount` (which only counts
+   * orders in a spend-counted status, for the "lifetime spend" KPI), it's
+   * every order regardless of status, matching what the unfiltered list
+   * below actually returns.
+   */
+  async findCustomer(id: string, page = 1, limit = 10) {
     const customer = await this.prisma.user.findFirst({
       where: { id, role: Role.CLIENT },
       select: SAFE_USER_SELECT,
     });
     if (!customer) throw new NotFoundException('Customer not found.');
 
-    const [aggregate, orders, favorites, designs] = await Promise.all([
+    const [aggregate, orders, ordersTotal, favorites, designs] = await Promise.all([
       this.prisma.order.aggregate({
         where: { customerId: id, status: SPENDING_STATUS },
         _sum: { total: true },
@@ -292,8 +302,10 @@ export class UsersService {
         where: { customerId: id },
         include: { items: true, delivery: true },
         orderBy: { createdAt: 'desc' },
-        take: recentOrders,
+        skip: (page - 1) * limit,
+        take: limit,
       }),
+      this.prisma.order.count({ where: { customerId: id } }),
       this.prisma.favorite.count({ where: { userId: id } }),
       this.prisma.roomDesign.count({ where: { userId: id } }),
     ]);
@@ -307,6 +319,9 @@ export class UsersService {
       favoriteCount: favorites,
       savedDesignCount: designs,
       orders,
+      ordersTotal,
+      ordersPage: page,
+      ordersLimit: limit,
     };
   }
 }

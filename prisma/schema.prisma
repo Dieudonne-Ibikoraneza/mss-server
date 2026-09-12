@@ -58,10 +58,6 @@ enum RoomType {
   BEDROOM
   BATHROOM
   KITCHEN
-  BALCONY
-  STAIRS
-  GATES
-  OUTDOOR
 }
 
 enum OrderType {

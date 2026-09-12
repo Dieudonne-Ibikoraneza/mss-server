@@ -53,15 +53,20 @@ export class CalculatorService {
     // Priced by area, not by the box — see `orders.service.ts#create`.
     const estimatedCost = quantity.purchasedArea * Number(product.price);
 
+    // Only the qualitative outcome leaves the server here: this endpoint is
+    // `@Public()`, and returning `fromStockPieces`/`toSourcePieces` would hand
+    // any anonymous visitor the exact available-to-buy quantity (just request
+    // an area past the shelf and read `fromStockPieces` back). The public
+    // catalog deliberately caps stock visibility at `stockStatus`
+    // (`canSeeExactStock`) — the calculator matches that.
     return {
       baseAreaSqm: baseArea,
       wastagePercent,
       requiredAreaSqm: areaWithWastage,
       quantity,
       stockSplit: {
-        fromStockPieces,
-        toSourcePieces,
         fullyAvailableFromStock: toSourcePieces === 0,
+        partiallyAvailableFromStock: fromStockPieces > 0 && toSourcePieces > 0,
       },
       estimatedCost,
       currency: product.currency,
