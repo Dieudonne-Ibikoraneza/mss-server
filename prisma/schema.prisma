@@ -235,18 +235,24 @@ model RefreshToken {
 // ---------------------------------------------------------------------------
 
 model Collection {
-  id          String   @id @default(uuid())
-  title       String
-  slug        String   @unique
-  description String?
-  image       String?
+  id            String   @id @default(uuid())
+  title         String
+  slug          String   @unique
+  description   String?
+  /// Auto-translated Kinyarwanda copy (see TranslationService) — null until
+  /// translated, at which point the storefront serves it instead of `title`
+  /// for an `rw` visitor. Never staff-editable directly; re-populated
+  /// whenever `title` changes.
+  titleRw       String?
+  descriptionRw String?
+  image         String?
   /// Physical tile size shared by every product in this collection, e.g. "25×40cm".
-  size        String
+  size          String
   /// Area of a single tile of this size, in sqm — derived from `size`, shared by every product in the collection.
-  tileAreaSqm Decimal  @db.Decimal(10, 4)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  tileAreaSqm   Decimal  @db.Decimal(10, 4)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   products Product[]
 }
@@ -269,6 +275,9 @@ model Product {
   /// Single product image (the catalog shows exactly one image per product).
   image          String
   description    String?
+  /// Auto-translated Kinyarwanda copy — see `Collection.titleRw`.
+  nameRw         String?
+  descriptionRw  String?
   suitableFor    SuitableFor @default(BOTH)
   roomTypes      RoomType[]
   isActive       Boolean     @default(true)
@@ -598,15 +607,18 @@ model Favorite {
 }
 
 model Room {
-  id          String   @id @default(uuid())
-  type        RoomType
-  name        String
-  description String?
-  modelUrl    String
-  thumbnail   String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(uuid())
+  type          RoomType
+  name          String
+  description   String?
+  /// Auto-translated Kinyarwanda copy — see `Collection.titleRw`.
+  nameRw        String?
+  descriptionRw String?
+  modelUrl      String
+  thumbnail     String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   designs RoomDesign[]
 }
@@ -720,6 +732,13 @@ model KnowledgeBaseEntry {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// Set on an auto-generated translation twin (see `ChatbotService.createKnowledgeBaseEntry`
+  /// and the translation backfill script) — points back at the entry it was
+  /// translated from, so a re-run never creates a duplicate twin.
+  translatedFromId String?
+  translatedFrom   KnowledgeBaseEntry?  @relation("KnowledgeBaseTranslation", fields: [translatedFromId], references: [id])
+  translations     KnowledgeBaseEntry[] @relation("KnowledgeBaseTranslation")
 }
 
 /// Editable, bilingual email copy, keyed by a stable code (e.g. "OTP_VERIFICATION")
@@ -798,6 +817,13 @@ model Recommendation {
   /// this is read, never a broken image.
   imagePath  String?
   rank       Int
+  /// Which physical surface this row is for, within a bathroom floor+wall
+  /// combo pick (see `ChatbotService.persistAndResolveRecommendations`) —
+  /// null for an ordinary single-tile pick. A combo's two rows share the
+  /// same `rank` and `messageId`; this is what tells them apart on reload
+  /// (`getHistory`) so they can be re-merged into the one card the customer
+  /// was shown, instead of surfacing as two separate recommendations.
+  surface    RoomSurface?
   matchScore Decimal                @db.Decimal(5, 2)
   reason     String?
   decision   RecommendationDecision @default(PENDING)
@@ -831,16 +857,18 @@ model PlatformSetting {
 /// furniture color, doors, tables, curtains, chairs"). A question with a
 /// `roomType` is conditional — only asked for that room type.
 model ProfilingQuestion {
-  id         String    @id @default(uuid())
+  id         String     @id @default(uuid())
   text       String
-  isRequired Boolean   @default(true)
-  /// Null = always asked. Set = only asked when the customer picked this room type.
-  roomType   RoomType?
-  position   Int       @default(0)
-  isActive   Boolean   @default(true)
-  language   Language  @default(EN)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  isRequired Boolean    @default(true)
+  /// Empty = always asked. Non-empty = only asked when the customer picked one of these room
+  /// types — a question can apply to more than one room (e.g. "what surfaces need tiling?"
+  /// makes sense for both a bathroom and a kitchen).
+  roomTypes  RoomType[] @default([])
+  position   Int        @default(0)
+  isActive   Boolean    @default(true)
+  language   Language   @default(EN)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
 
   @@index([position])
 }
