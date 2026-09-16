@@ -508,21 +508,22 @@ async function main() {
   console.log(`Platform settings ready: ${Object.keys(platformSettings).length} rows.`);
 
   // --- AI customer-profiling questions (doc 3.6) ---------------------------
-  // A question with a roomType is conditional: only asked for that room type.
+  // A question with non-empty roomTypes is conditional: only asked when the
+  // customer picked one of those room types.
   const profilingQuestions: {
     text: string;
     isRequired: boolean;
-    roomType: RoomType | null;
+    roomTypes: RoomType[];
   }[] = [
-    { text: 'What is your primary goal for using this space today?', isRequired: true, roomType: null },
-    { text: 'Which room are you designing?', isRequired: true, roomType: null },
-    { text: 'What is the approximate size of the space?', isRequired: true, roomType: null },
-    { text: 'What is the primary wall paint color?', isRequired: true, roomType: null },
-    { text: 'What is the dominant color of your large furniture?', isRequired: false, roomType: RoomType.LIVING_ROOM },
-    { text: 'What style are the interior doors?', isRequired: false, roomType: RoomType.LIVING_ROOM },
-    { text: 'Are the tables predominantly wooden or glass?', isRequired: false, roomType: RoomType.LIVING_ROOM },
-    { text: 'What is the style of your window curtains or blinds?', isRequired: false, roomType: RoomType.LIVING_ROOM },
-    { text: 'What material are the accent chairs?', isRequired: false, roomType: RoomType.LIVING_ROOM },
+    { text: 'What is your primary goal for using this space today?', isRequired: true, roomTypes: [] },
+    { text: 'Which room are you designing?', isRequired: true, roomTypes: [] },
+    { text: 'What is the approximate size of the space?', isRequired: true, roomTypes: [] },
+    { text: 'What is the primary wall paint color?', isRequired: true, roomTypes: [] },
+    { text: 'What is the dominant color of your large furniture?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
+    { text: 'What style are the interior doors?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
+    { text: 'Are the tables predominantly wooden or glass?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
+    { text: 'What is the style of your window curtains or blinds?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
+    { text: 'What material are the accent chairs?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
   ];
 
   for (const [position, question] of profilingQuestions.entries()) {

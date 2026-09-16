@@ -26,10 +26,11 @@ export class CreateProfilingQuestionDto {
   @IsBoolean()
   isRequired?: boolean;
 
-  /** Set to make the question conditional — only asked when the customer picked this room type. */
+  /** Set to make the question conditional — only asked when the customer picked one of these room types. Omit/empty for always-asked. */
   @IsOptional()
-  @IsEnum(RoomType)
-  roomType?: RoomType;
+  @IsArray()
+  @IsEnum(RoomType, { each: true })
+  roomTypes?: RoomType[];
 
   @IsOptional()
   @IsInt()
@@ -53,8 +54,9 @@ export class UpdateProfilingQuestionDto {
   isRequired?: boolean;
 
   @IsOptional()
-  @IsEnum(RoomType)
-  roomType?: RoomType | null;
+  @IsArray()
+  @IsEnum(RoomType, { each: true })
+  roomTypes?: RoomType[];
 
   @IsOptional()
   @IsInt()

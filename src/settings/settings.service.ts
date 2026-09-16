@@ -57,13 +57,15 @@ export class SettingsService {
     });
   }
 
-  /** Questions to ask for a given room type: the always-on ones plus that room's conditionals. */
+  /** Questions to ask for a given room type: the always-on ones (empty `roomTypes`) plus every
+   * conditional question that lists this room among its own — a question can apply to more
+   * than one room type. */
   listQuestionsForRoom(roomType: RoomType, language?: Language) {
     return this.prisma.profilingQuestion.findMany({
       where: {
         language,
         isActive: true,
-        OR: [{ roomType: null }, { roomType }],
+        OR: [{ roomTypes: { isEmpty: true } }, { roomTypes: { has: roomType } }],
       },
       orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
     });
