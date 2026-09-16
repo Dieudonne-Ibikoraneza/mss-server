@@ -19,7 +19,13 @@ export interface ChatProductCandidate {
 }
 
 export interface ChatRecommendationPick {
+  /** The floor tile for a bathroom combo pick, or the sole product otherwise. */
   productId: string;
+  /** Present only for a bathroom pick: a second real product, suited for WALL
+   * (or BOTH), to be shown installed on the wall alongside `productId` on the
+   * floor — bathrooms are the one room type where customers commonly tile
+   * only the lower portion of the wall as well as the floor. */
+  wallProductId?: string;
   matchScore: number;
   reason: string;
 }

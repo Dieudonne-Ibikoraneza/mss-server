@@ -44,8 +44,12 @@ export class ChatbotController {
     description: 'Requires a signed-in customer — every conversation is tied to their account.',
   })
   @Post('messages')
-  sendMessage(@Body() dto: SendMessageDto, @CurrentUser('id') userId: string) {
-    return this.chatbotService.sendMessage(dto, userId);
+  sendMessage(
+    @Body() dto: SendMessageDto,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+  ) {
+    return this.chatbotService.sendMessage(dto, userId, role);
   }
 
   @ApiBearerAuth()

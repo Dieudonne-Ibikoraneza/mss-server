@@ -1,6 +1,13 @@
 import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ChatRole, Language, Prisma, RecommendationDecision, Role } from '@prisma/client';
+import {
+  ChatRole,
+  Language,
+  Prisma,
+  RecommendationDecision,
+  Role,
+  RoomSurface,
+} from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import {
@@ -23,6 +30,7 @@ import {
   type RoomTileEditProvider,
 } from './providers/room-tile-provider.interface';
 import { downloadReferenceImage } from './providers/gemini-image-client';
+import { TranslationService } from '@/translation/translation.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto } from './dto/media-preview.dto';
@@ -65,6 +73,7 @@ export class ChatbotService {
     @Inject(ROOM_TILE_EDIT_PROVIDER)
     private readonly roomTileProvider: RoomTileEditProvider,
     private readonly storage: StorageService,
+    private readonly translation: TranslationService,
   ) {}
 
   private async getOrCreateConversation(sessionId: string, userId: string, language: Language) {
@@ -106,7 +115,7 @@ export class ChatbotService {
     });
   }
 
-  async sendMessage(dto: SendMessageDto, userId: string) {
+  async sendMessage(dto: SendMessageDto, userId: string, role: Role) {
     const conversation = dto.conversationId
       ? await this.resolveOwnedConversation(dto.conversationId, userId)
       : await this.getOrCreateConversation(dto.sessionId, userId, dto.language ?? Language.EN);
@@ -198,7 +207,12 @@ export class ChatbotService {
     // a follow-up question about one — excluded here even though
     // `hadPriorRecommendations` is true, same as every profiling-questionnaire
     // turn before the first recommendation ever exists.
-    if (hadPriorRecommendations && products.length === 0) {
+    // Staff use the chatbot too (testing, demoing to a walk-in customer),
+    // but the "asked questions" analytics (`/admin/asked-questions`,
+    // `listPostRecommendationInquiries`) exists to surface real customer
+    // intent — a stock manager's test questions would just be noise there,
+    // so only a CLIENT's follow-up gets logged.
+    if (hadPriorRecommendations && products.length === 0 && role === Role.CLIENT) {
       await this.prisma.postRecommendationInquiry.create({
         data: {
           conversationId: conversation.id,
@@ -218,7 +232,7 @@ export class ChatbotService {
    * name/price/image — those must always come from Postgres, never from the model.
    */
   private async persistAndResolveRecommendations(
-    picks: { productId: string; matchScore: number; reason: string }[],
+    picks: { productId: string; wallProductId?: string; matchScore: number; reason: string }[],
     candidateProducts: Prisma.ProductGetPayload<{
       include: { collection: true };
     }>[],
@@ -230,10 +244,16 @@ export class ChatbotService {
     if (picks.length === 0) return [];
 
     const byId = new Map(candidateProducts.map((p) => [p.id, p]));
+    type CandidateProduct = (typeof candidateProducts)[number];
     const resolved = picks
       .map((pick, index) => {
         const product = byId.get(pick.productId);
-        return product ? { pick, product, rank: index + 1 } : null;
+        if (!product) return null;
+        // A wallProductId that no longer resolves (candidate list changed
+        // between provider call and here — practically never, but cheap to
+        // guard) just falls back to a single-product pick.
+        const wallProduct = pick.wallProductId ? (byId.get(pick.wallProductId) ?? null) : null;
+        return { pick, product, wallProduct, rank: index + 1 };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
@@ -245,12 +265,21 @@ export class ChatbotService {
     // like "products/<uuid>.png", not a URL, so the browser can't render it
     // at all — this is what was actually behind a blank/broken tile whenever
     // generation failed, not the generation failure itself.
-    const resolvedImageUrls = await Promise.all(
+    const floorImageUrls = await Promise.all(
       resolved.map(({ product }) => this.resolveProductImage(product.image)),
     );
+    const wallImageUrls = await Promise.all(
+      resolved.map(({ wallProduct }) =>
+        wallProduct ? this.resolveProductImage(wallProduct.image) : Promise.resolve(null),
+      ),
+    );
 
+    // One generation call per pick, whether it's a single tile or a bathroom
+    // floor+wall combo — the combo still renders as one finished room scene,
+    // shared by both of that pick's cards below, so this never costs more
+    // API calls than today's one-per-pick.
     const generatedImages = await Promise.all(
-      resolved.map(async ({ product }, index) =>
+      resolved.map(async ({ product, wallProduct }, index) =>
         this.recommendationImageProvider.generate({
           customerBrief,
           product: {
@@ -258,8 +287,19 @@ export class ChatbotService {
             description: product.description,
             collection: product.collection.title,
             size: product.collection.size,
-            imageUrl: resolvedImageUrls[index],
+            imageUrl: floorImageUrls[index],
           },
+          ...(wallProduct && wallImageUrls[index]
+            ? {
+                wallProduct: {
+                  name: wallProduct.name,
+                  description: wallProduct.description,
+                  collection: wallProduct.collection.title,
+                  size: wallProduct.collection.size,
+                  imageUrl: wallImageUrls[index],
+                },
+              }
+            : {}),
         }),
       ),
     );
@@ -287,45 +327,96 @@ export class ChatbotService {
       }),
     );
 
+    // Flattened: a bathroom combo pick becomes two rows (the floor product,
+    // then the wall product) that share the same rank and the same generated
+    // scene — everything else about them (create, resolve) is identical to a
+    // single-product pick, just repeated for each surface. They're persisted
+    // as two real rows (so each product still gets its own like/dislike and
+    // purchase-attribution history), but merged back into ONE card below —
+    // the customer asked for exactly 3 recommendations, not 3 floor tiles
+    // plus 3 wall tiles shown as 6 separate cards.
+    type Row = {
+      pickIndex: number;
+      rank: number;
+      matchScore: number;
+      reason: string;
+      product: CandidateProduct;
+      surface: RoomSurface | null;
+    };
+    const rows: Row[] = resolved.flatMap(
+      ({ pick, product, wallProduct, rank }, pickIndex): Row[] => {
+        const base = { pickIndex, rank, matchScore: pick.matchScore, reason: pick.reason };
+        if (!wallProduct) return [{ ...base, product, surface: null }];
+        return [
+          { ...base, product, surface: RoomSurface.FLOOR },
+          { ...base, product: wallProduct, surface: RoomSurface.WALL },
+        ];
+      },
+    );
+
     // Individual creates (not createMany) so each row's real id comes back —
     // the customer's later like/dislike targets this exact recommendation,
     // not just "some recommendation of this product". `messageId` is what
     // lets a reloaded conversation re-attach these to the right turn later
     // (see `getHistory`) instead of the cards just disappearing.
     const created = await this.prisma.$transaction(
-      resolved.map(({ pick, product, rank }, index) =>
+      rows.map((row) =>
         this.prisma.recommendation.create({
           data: {
             userId,
             sessionId,
-            productId: product.id,
+            productId: row.product.id,
             messageId: assistantMessageId,
-            imagePath: imagePaths[index],
-            rank,
-            matchScore: pick.matchScore,
-            reason: pick.reason,
+            imagePath: imagePaths[row.pickIndex],
+            rank: row.rank,
+            surface: row.surface,
+            matchScore: row.matchScore,
+            reason: row.reason,
           },
         }),
       ),
     );
 
-    return resolved.map(({ pick, product }, index) => ({
-      id: product.id,
-      recommendationId: created[index].id,
-      name: product.name,
+    return resolved.map((_, pickIndex) => {
+      const rowIndices = rows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => row.pickIndex === pickIndex);
+      const floorEntry = rowIndices.find(({ row }) => row.surface !== RoomSurface.WALL)!;
+      const wallEntry = rowIndices.find(({ row }) => row.surface === RoomSurface.WALL);
+
+      const generated = generatedImages[pickIndex];
+      const fallbackUrl = floorImageUrls[pickIndex];
       // The freshly generated bytes are rendered directly here (no need to
       // round-trip through the URL we just uploaded them to) — the real
       // catalog photo is the fallback whenever generation itself failed.
-      image: generatedImages[index]
-        ? `data:${generatedImages[index].mimeType};base64,${generatedImages[index].data}`
-        : resolvedImageUrls[index],
-      price: Number(product.price),
-      link: `/products/${product.id}`,
-      collection: product.collection.title,
-      size: product.collection.size,
-      matchScore: pick.matchScore,
-      reason: pick.reason,
-    }));
+      const image = generated ? `data:${generated.mimeType};base64,${generated.data}` : (fallbackUrl ?? '');
+
+      return {
+        id: floorEntry.row.product.id,
+        recommendationId: created[floorEntry.index].id,
+        name: floorEntry.row.product.name,
+        image,
+        price: Number(floorEntry.row.product.price),
+        link: `/products/${floorEntry.row.product.id}`,
+        collection: floorEntry.row.product.collection.title,
+        size: floorEntry.row.product.collection.size,
+        matchScore: floorEntry.row.matchScore,
+        reason: floorEntry.row.reason,
+        ...(wallEntry
+          ? {
+              wallProduct: {
+                id: wallEntry.row.product.id,
+                recommendationId: created[wallEntry.index].id,
+                name: wallEntry.row.product.name,
+                price: Number(wallEntry.row.product.price),
+                link: `/products/${wallEntry.row.product.id}`,
+                collection: wallEntry.row.product.collection.title,
+                size: wallEntry.row.product.collection.size,
+              },
+            }
+          : {}),
+      };
+    });
   }
 
   private async resolveProductImage(image: string, bucket?: string) {
@@ -410,28 +501,64 @@ export class ChatbotService {
           return { ...message, products: undefined, decision: undefined, attachment };
         }
 
+        // A bathroom combo's two rows (floor + wall) share the same `rank`
+        // and were shown as one card originally — grouping by rank here is
+        // what re-merges them on reload instead of surfacing 6 cards for 3
+        // recommendations. `batch` is already ordered by rank asc, so this
+        // preserves the original order.
+        const byRank = new Map<number, typeof batch>();
+        for (const recommendation of batch) {
+          const group = byRank.get(recommendation.rank) ?? [];
+          group.push(recommendation);
+          byRank.set(recommendation.rank, group);
+        }
+
         const products = await Promise.all(
-          batch.map(async (recommendation) => ({
-            id: recommendation.product.id,
-            recommendationId: recommendation.id,
-            name: recommendation.product.name,
-            // The persisted AI room visualization is the primary image here
-            // — same one shown live, not regenerated — falling back to the
-            // real catalog photo only when generation failed or predates
-            // `imagePath` (never a broken image either way).
-            image: recommendation.imagePath
-              ? await this.resolveProductImage(
-                  recommendation.imagePath,
-                  RECOMMENDATION_IMAGES_BUCKET,
-                )
-              : await this.resolveProductImage(recommendation.product.image),
-            price: Number(recommendation.product.price),
-            link: `/products/${recommendation.product.id}`,
-            collection: recommendation.product.collection.title,
-            size: recommendation.product.collection.size,
-            matchScore: Number(recommendation.matchScore),
-            reason: recommendation.reason ?? '',
-          })),
+          Array.from(byRank.values()).map(async (group) => {
+            // Rows created before the `surface` column existed are both
+            // untagged (null) — falling back to "the second row in the pair
+            // is the wall one" (their original creation/rank-tie order) so
+            // those older conversations still reload as one merged card
+            // instead of silently losing whichever row `.find` skips.
+            const explicitWall = group.find((r) => r.surface === RoomSurface.WALL);
+            const wall = explicitWall ?? (group.length > 1 ? group[group.length - 1] : undefined);
+            const floor = group.find((r) => r !== wall) ?? group[0];
+
+            const resolveCardImage = async (recommendation: (typeof group)[number]) =>
+              // The persisted AI room visualization is the primary image
+              // here — same one shown live, not regenerated — falling back
+              // to the real catalog photo only when generation failed or
+              // predates `imagePath` (never a broken image either way).
+              recommendation.imagePath
+                ? this.resolveProductImage(recommendation.imagePath, RECOMMENDATION_IMAGES_BUCKET)
+                : this.resolveProductImage(recommendation.product.image);
+
+            return {
+              id: floor.product.id,
+              recommendationId: floor.id,
+              name: floor.product.name,
+              image: await resolveCardImage(floor),
+              price: Number(floor.product.price),
+              link: `/products/${floor.product.id}`,
+              collection: floor.product.collection.title,
+              size: floor.product.collection.size,
+              matchScore: Number(floor.matchScore),
+              reason: floor.reason ?? '',
+              ...(wall
+                ? {
+                    wallProduct: {
+                      id: wall.product.id,
+                      recommendationId: wall.id,
+                      name: wall.product.name,
+                      price: Number(wall.product.price),
+                      link: `/products/${wall.product.id}`,
+                      collection: wall.product.collection.title,
+                      size: wall.product.collection.size,
+                    },
+                  }
+                : {}),
+            };
+          }),
         );
 
         // Every recommendation in a batch always carries the same decision
@@ -671,8 +798,39 @@ export class ChatbotService {
     return this.prisma.knowledgeBaseEntry.findMany({ where: { isActive: true } });
   }
 
-  createKnowledgeBaseEntry(dto: UpsertKnowledgeBaseEntryDto) {
-    return this.prisma.knowledgeBaseEntry.create({ data: { ...dto, tags: dto.tags ?? [] } });
+  /**
+   * The assistant grounds itself strictly on entries matching the
+   * conversation's own language (see the `knowledgeBaseEntry.findMany` call
+   * above) — an entry written only in EN is invisible to every RW
+   * conversation. Rather than expect staff to write every entry twice,
+   * creating one in EN auto-creates its RW twin (translated question +
+   * answer, same tags) as a second real row.
+   */
+  async createKnowledgeBaseEntry(dto: UpsertKnowledgeBaseEntryDto) {
+    const entry = await this.prisma.knowledgeBaseEntry.create({
+      data: { ...dto, tags: dto.tags ?? [] },
+    });
+
+    if (entry.language === Language.EN) {
+      const translated = await this.translation.translateFields(
+        { question: entry.question, answer: entry.answer },
+        Language.EN,
+        Language.RW,
+      );
+      if (translated.question && translated.answer) {
+        await this.prisma.knowledgeBaseEntry.create({
+          data: {
+            question: translated.question,
+            answer: translated.answer,
+            tags: entry.tags,
+            language: Language.RW,
+            translatedFromId: entry.id,
+          },
+        });
+      }
+    }
+
+    return entry;
   }
 
   async deleteKnowledgeBaseEntry(id: string) {
