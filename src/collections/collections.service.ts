@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Language } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { paginate } from '@/common/dto/pagination.dto';
@@ -7,6 +8,7 @@ import { CreateCollectionDto } from './dto/create-collection.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 import { QueryCollectionsDto } from './dto/query-collections.dto';
 import { COLLECTION_IMAGES_BUCKET, StorageService } from '@/storage/storage.service';
+import { TranslationService } from '@/translation/translation.service';
 
 const LIST_CACHE_PREFIX = 'cache:collections:list:';
 const DETAIL_CACHE_PREFIX = 'cache:collections:detail:';
@@ -19,6 +21,7 @@ export class CollectionsService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly storage: StorageService,
+    private readonly translation: TranslationService,
   ) {}
 
   async findAll(query: QueryCollectionsDto) {
@@ -59,8 +62,18 @@ export class CollectionsService {
   }
 
   async create(dto: CreateCollectionDto) {
+    const translated = await this.translation.translateFields(
+      { title: dto.title, description: dto.description },
+      Language.EN,
+      Language.RW,
+    );
     const collection = await this.prisma.collection.create({
-      data: { ...dto, slug: slugify(dto.title) },
+      data: {
+        ...dto,
+        slug: slugify(dto.title),
+        titleRw: translated.title ?? null,
+        descriptionRw: translated.description ?? null,
+      },
     });
     await this.redis.delByPrefix(LIST_CACHE_PREFIX);
     return collection;
@@ -68,9 +81,42 @@ export class CollectionsService {
 
   async update(id: string, dto: UpdateCollectionDto) {
     await this.assertExists(id);
+
+    // `title`/`description` are the always-English columns; `titleRw`/
+    // `descriptionRw` the always-Kinyarwanda ones. The edit dialog sends
+    // whichever pair matches the admin UI's current language — sending
+    // `titleRw`/`descriptionRw` (and not `title`/`description`) means this
+    // edit was authored in Kinyarwanda, so it's the *English* columns that
+    // get regenerated here, not the usual other way round.
+    const { title, description, titleRw, descriptionRw, ...rest } = dto;
+    const editedInRw =
+      (titleRw !== undefined || descriptionRw !== undefined) &&
+      title === undefined &&
+      description === undefined;
+
+    const translated = editedInRw
+      ? await this.translation.translateFields(
+          { title: titleRw, description: descriptionRw },
+          Language.RW,
+          Language.EN,
+        )
+      : await this.translation.translateFields({ title, description }, Language.EN, Language.RW);
+
+    const finalTitle = editedInRw ? translated.title : title;
+    const finalDescription = editedInRw ? translated.description : description;
+    const finalTitleRw = editedInRw ? titleRw : translated.title;
+    const finalDescriptionRw = editedInRw ? descriptionRw : translated.description;
+
     const collection = await this.prisma.collection.update({
       where: { id },
-      data: { ...dto, slug: dto.title ? slugify(dto.title) : undefined },
+      data: {
+        ...rest,
+        title: finalTitle,
+        description: finalDescription,
+        slug: finalTitle ? slugify(finalTitle) : undefined,
+        titleRw: finalTitleRw,
+        descriptionRw: finalDescriptionRw,
+      },
     });
     await Promise.all([
       this.redis.delByPrefix(LIST_CACHE_PREFIX),

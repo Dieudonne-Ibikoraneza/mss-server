@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Role, StockMovementType } from '@prisma/client';
+import { Language, Prisma, Role, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { StorageService } from '@/storage/storage.service';
 import { OrdersService } from '@/orders/orders.service';
+import { TranslationService } from '@/translation/translation.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-calculator';
@@ -39,6 +40,7 @@ export class ProductsService {
     private readonly notifications: NotificationsService,
     private readonly storage: StorageService,
     private readonly orders: OrdersService,
+    private readonly translation: TranslationService,
   ) {}
 
   /**
@@ -85,6 +87,7 @@ export class ProductsService {
       collection: {
         id: collection.id,
         title: collection.title,
+        titleRw: collection.titleRw,
         slug: collection.slug,
         size: collection.size,
       },
@@ -133,6 +136,7 @@ export class ProductsService {
         collection: {
           id: product.collection.id,
           title: product.collection.title,
+          titleRw: product.collection.titleRw,
           slug: product.collection.slug,
           size: product.collection.size,
         },
@@ -205,6 +209,12 @@ export class ProductsService {
         ? new Prisma.Decimal(dto.initialCostPrice)
         : new Prisma.Decimal(0);
 
+    const translated = await this.translation.translateFields(
+      { name: dto.name, description: dto.description },
+      Language.EN,
+      Language.RW,
+    );
+
     const product = await this.prisma.product.create({
       data: {
         name: dto.name,
@@ -216,6 +226,8 @@ export class ProductsService {
         price: dto.price,
         image: dto.image,
         description: dto.description,
+        nameRw: translated.name ?? null,
+        descriptionRw: translated.description ?? null,
         suitableFor: dto.suitableFor,
         roomTypes: dto.roomTypes,
         quantityOnHandSqm: initialAreaSqm,
@@ -244,10 +256,46 @@ export class ProductsService {
 
   async update(id: string, dto: UpdateProductDto) {
     await this.findOne(id);
+
+    // `name`/`description` are the always-English columns; `nameRw`/
+    // `descriptionRw` the always-Kinyarwanda ones. The edit dialog sends
+    // whichever pair matches the admin UI's current language — sending
+    // `nameRw`/`descriptionRw` (and not `name`/`description`) means this
+    // edit was authored in Kinyarwanda, so it's the *English* columns that
+    // get regenerated here, not the usual other way round.
+    const { name, description, nameRw, descriptionRw, ...rest } = dto;
+    const editedInRw =
+      (nameRw !== undefined || descriptionRw !== undefined) &&
+      name === undefined &&
+      description === undefined;
+
+    // Only re-translates the fields actually being changed — `translateFields`
+    // omits anything not passed, so an update that doesn't touch the edited
+    // language's fields leaves the other language's columns alone.
+    const translated = editedInRw
+      ? await this.translation.translateFields(
+          { name: nameRw, description: descriptionRw },
+          Language.RW,
+          Language.EN,
+        )
+      : await this.translation.translateFields({ name, description }, Language.EN, Language.RW);
+
+    const finalName = editedInRw ? translated.name : name;
+    const finalDescription = editedInRw ? translated.description : description;
+    const finalNameRw = editedInRw ? nameRw : translated.name;
+    const finalDescriptionRw = editedInRw ? descriptionRw : translated.description;
+
     const [product, threshold] = await Promise.all([
       this.prisma.product.update({
         where: { id },
-        data: { ...dto, slug: dto.name ? slugify(dto.name) : undefined },
+        data: {
+          ...rest,
+          name: finalName,
+          description: finalDescription,
+          slug: finalName ? slugify(finalName) : undefined,
+          nameRw: finalNameRw,
+          descriptionRw: finalDescriptionRw,
+        },
         include: { collection: true },
       }),
       getLowStockThreshold(this.prisma),

@@ -47,6 +47,23 @@ export class CreateProductDto {
   @IsString()
   description?: string;
 
+  /**
+   * Set when the edit was authored in the Kinyarwanda admin UI — the
+   * client sends the Kinyarwanda text here (not in `name`, which stays the
+   * English column always) so the service knows to translate RW -> EN and
+   * regenerate `name`/`description` instead of the usual EN -> RW.
+   * Never sent together with `name`/`description` by the app's own edit
+   * dialogs, but nothing stops a future caller from providing both.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  nameRw?: string;
+
+  @IsOptional()
+  @IsString()
+  descriptionRw?: string;
+
   @IsEnum(SuitableFor)
   suitableFor: SuitableFor;
 

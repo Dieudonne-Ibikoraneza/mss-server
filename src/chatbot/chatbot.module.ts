@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventsModule } from '@/events/events.module';
 import { StorageModule } from '@/storage/storage.module';
+import { TranslationModule } from '@/translation/translation.module';
 import { ChatbotController } from './chatbot.controller';
 import { ChatbotService } from './chatbot.service';
 import { CHAT_PROVIDER } from './providers/chat-provider.interface';
@@ -15,7 +16,7 @@ import { GeminiRoomTileProvider } from './providers/gemini-room-tile.provider';
 import { StubRoomTileProvider } from './providers/room-tile.stub';
 
 @Module({
-  imports: [EventsModule, ConfigModule, StorageModule],
+  imports: [EventsModule, ConfigModule, StorageModule, TranslationModule],
   controllers: [ChatbotController],
   providers: [
     ChatbotService,

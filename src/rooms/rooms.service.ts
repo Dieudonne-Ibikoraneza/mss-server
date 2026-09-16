@@ -4,10 +4,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, SuitableFor } from '@prisma/client';
+import { Language, Prisma, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { ProductsService } from '@/products/products.service';
+import { TranslationService } from '@/translation/translation.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
@@ -27,6 +28,7 @@ export class RoomsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsService,
     private readonly products: ProductsService,
+    private readonly translation: TranslationService,
   ) {}
 
   findAllRooms() {
@@ -38,14 +40,36 @@ export class RoomsService {
     return this.prisma.room.findMany({ orderBy: { name: 'asc' } });
   }
 
-  createRoom(dto: CreateRoomDto) {
-    return this.prisma.room.create({ data: dto });
+  async createRoom(dto: CreateRoomDto) {
+    // Room templates are admin-authored copy, always in English — no
+    // Kinyarwanda-locale editing surface exists for these (unlike
+    // products/collections), so this direction is always EN -> RW.
+    const translated = await this.translation.translateFields(
+      { name: dto.name, description: dto.description },
+      Language.EN,
+      Language.RW,
+    );
+    return this.prisma.room.create({
+      data: {
+        ...dto,
+        nameRw: translated.name ?? null,
+        descriptionRw: translated.description ?? null,
+      },
+    });
   }
 
   async updateRoom(id: string, dto: UpdateRoomDto) {
     const room = await this.prisma.room.findUnique({ where: { id } });
     if (!room) throw new NotFoundException('Room not found.');
-    return this.prisma.room.update({ where: { id }, data: dto });
+    const translated = await this.translation.translateFields(
+      { name: dto.name, description: dto.description },
+      Language.EN,
+      Language.RW,
+    );
+    return this.prisma.room.update({
+      where: { id },
+      data: { ...dto, nameRw: translated.name, descriptionRw: translated.description },
+    });
   }
 
   /**

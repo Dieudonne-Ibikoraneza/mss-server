@@ -85,6 +85,13 @@ export default () => ({
       model: process.env.GEMINI_IMAGE_MODEL ?? 'gemini-3.1-flash-lite-image',
     },
   },
+  translate: {
+    // "stub" (leaves rw fields empty, no external calls) or "google" (real
+    // Google Cloud Translation API) — same shape as the AI provider knobs
+    // above, so local dev never needs real credentials.
+    provider: process.env.TRANSLATE_PROVIDER ?? 'stub',
+    googleApiKey: process.env.GOOGLE_TRANSLATE_API_KEY,
+  },
   storage: {
     driver: process.env.STORAGE_DRIVER ?? 'local',
     localPath: process.env.STORAGE_LOCAL_PATH ?? './uploads',
