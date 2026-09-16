@@ -24,7 +24,7 @@ export class EventsController {
   })
   @Post('tile')
   recordTileEvent(@Body() dto: RecordTileEventDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.eventsService.recordTileEvent({ ...dto, userId: user?.id });
+    return this.eventsService.recordTileEvent({ ...dto, userId: user?.id, role: user?.role });
   }
 
   @Public()
@@ -34,6 +34,6 @@ export class EventsController {
   })
   @Post('journey')
   recordJourneyEvent(@Body() dto: RecordJourneyEventDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.eventsService.recordJourneyEvent({ ...dto, userId: user?.id });
+    return this.eventsService.recordJourneyEvent({ ...dto, userId: user?.id, role: user?.role });
   }
 }
