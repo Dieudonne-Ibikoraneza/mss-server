@@ -25,6 +25,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { CalculateQuantityDto } from './dto/calculate-quantity.dto';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
+import { CheckSkuDto } from './dto/check-sku.dto';
 import { StorageService } from '@/storage/storage.service';
 
 const PRODUCT_IMAGE_MAX_SIZE = 10 * 1024 * 1024;
@@ -73,6 +74,14 @@ export class ProductsController {
   @Get()
   findAll(@Query() query: QueryProductsDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.productsService.findAll(query, user?.role);
+  }
+
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Check whether a SKU is free to use (admin/stock manager) — the registration/edit form polls this as the user types' })
+  @Get('check-sku')
+  checkSku(@Query() query: CheckSkuDto) {
+    return this.productsService.checkSkuAvailability(query.sku, query.excludeId);
   }
 
   @Public()

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Language, Prisma, Role, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -215,43 +215,62 @@ export class ProductsService {
       Language.RW,
     );
 
-    const product = await this.prisma.product.create({
-      data: {
-        name: dto.name,
-        sku: dto.sku,
-        slug: slugify(dto.name),
-        collectionId: dto.collectionId,
-        boxCoverageSqm: dto.boxCoverageSqm,
-        piecesPerBox: dto.piecesPerBox,
-        price: dto.price,
-        image: dto.image,
-        description: dto.description,
-        nameRw: translated.name ?? null,
-        descriptionRw: translated.description ?? null,
-        suitableFor: dto.suitableFor,
-        roomTypes: dto.roomTypes,
-        quantityOnHandSqm: initialAreaSqm,
-        averageCostPrice,
-        // Audit trail for the opening stock, same feed every other movement writes to.
-        ...(initialAreaSqm > 0
-          ? {
-              stockAdjustments: {
-                create: {
-                  changeAreaSqm: initialAreaSqm,
-                  type: StockMovementType.INBOUND,
-                  reason: 'Initial stock on product creation',
-                  costPrice: dto.initialCostPrice,
-                  averageCostAfter: averageCostPrice,
-                  adjustedById: createdById,
+    const product = await this.withUniqueSkuCheck(() =>
+      this.prisma.product.create({
+        data: {
+          name: dto.name,
+          sku: dto.sku,
+          slug: slugify(dto.name),
+          collectionId: dto.collectionId,
+          boxCoverageSqm: dto.boxCoverageSqm,
+          piecesPerBox: dto.piecesPerBox,
+          price: dto.price,
+          image: dto.image,
+          description: dto.description,
+          nameRw: translated.name ?? null,
+          descriptionRw: translated.description ?? null,
+          suitableFor: dto.suitableFor,
+          roomTypes: dto.roomTypes,
+          quantityOnHandSqm: initialAreaSqm,
+          averageCostPrice,
+          // Audit trail for the opening stock, same feed every other movement writes to.
+          ...(initialAreaSqm > 0
+            ? {
+                stockAdjustments: {
+                  create: {
+                    changeAreaSqm: initialAreaSqm,
+                    type: StockMovementType.INBOUND,
+                    reason: 'Initial stock on product creation',
+                    costPrice: dto.initialCostPrice,
+                    averageCostAfter: averageCostPrice,
+                    adjustedById: createdById,
+                  },
                 },
-              },
-            }
-          : {}),
-      },
-      include: { collection: true },
-    });
+              }
+            : {}),
+        },
+        include: { collection: true },
+      }),
+    );
     await invalidateProductsCache(this.redis, [product.id]);
     return this.serialize(product, await getLowStockThreshold(this.prisma), Role.ADMIN);
+  }
+
+  /**
+   * Wraps a create/update write that touches `sku` and turns the DB's unique
+   * constraint violation into a clean 409 — a backstop for the rare race
+   * where two submissions land between the live `checkSkuAvailability` poll
+   * and the actual write, since that check alone can't be atomic with it.
+   */
+  private async withUniqueSkuCheck<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('This SKU is already in use by another product.');
+      }
+      throw error;
+    }
   }
 
   async update(id: string, dto: UpdateProductDto) {
@@ -286,18 +305,20 @@ export class ProductsService {
     const finalDescriptionRw = editedInRw ? descriptionRw : translated.description;
 
     const [product, threshold] = await Promise.all([
-      this.prisma.product.update({
-        where: { id },
-        data: {
-          ...rest,
-          name: finalName,
-          description: finalDescription,
-          slug: finalName ? slugify(finalName) : undefined,
-          nameRw: finalNameRw,
-          descriptionRw: finalDescriptionRw,
-        },
-        include: { collection: true },
-      }),
+      this.withUniqueSkuCheck(() =>
+        this.prisma.product.update({
+          where: { id },
+          data: {
+            ...rest,
+            name: finalName,
+            description: finalDescription,
+            slug: finalName ? slugify(finalName) : undefined,
+            nameRw: finalNameRw,
+            descriptionRw: finalDescriptionRw,
+          },
+          include: { collection: true },
+        }),
+      ),
       getLowStockThreshold(this.prisma),
     ]);
     await invalidateProductsCache(this.redis, [id]);
@@ -308,6 +329,20 @@ export class ProductsService {
     await this.findOne(id);
     await this.prisma.product.update({ where: { id }, data: { isActive: false } });
     await invalidateProductsCache(this.redis, [id]);
+  }
+
+  /** Live check the registration/edit form polls (debounced) as the user types a SKU, so a collision surfaces before submit instead of after. Case-insensitive, since the DB's own unique index is the only place case ever matters for real. */
+  async checkSkuAvailability(sku: string, excludeId?: string) {
+    const trimmed = sku.trim();
+    if (!trimmed) return { available: false };
+    const existing = await this.prisma.product.findFirst({
+      where: {
+        sku: { equals: trimmed, mode: 'insensitive' },
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+    return { available: !existing };
   }
 
   /** Price calculator from 3.3: client enters area, we return quantity + total price. */
