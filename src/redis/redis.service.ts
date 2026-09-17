@@ -29,6 +29,13 @@ export class RedisService {
     }
   }
 
+  /** Atomically claims a short-lived key. Useful for replay and duplicate suppression. */
+  async setIfAbsent(key: string, value: unknown, ttlSeconds: number): Promise<boolean> {
+    const payload = typeof value === 'string' ? value : JSON.stringify(value);
+    const result = await this.client.set(key, payload, 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
+  }
+
   async del(key: string): Promise<void> {
     await this.client.del(key);
   }

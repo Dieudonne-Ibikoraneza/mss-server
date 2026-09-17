@@ -1,5 +1,6 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '@/common/decorators/public.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -18,22 +19,32 @@ export class EventsController {
   constructor(private readonly eventsService: EventsService) {}
 
   @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Record a tile interaction event',
     description: 'Anonymous-safe; keyed by client-generated sessionId.',
   })
   @Post('tile')
   recordTileEvent(@Body() dto: RecordTileEventDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.eventsService.recordTileEvent({ ...dto, userId: user?.id, role: user?.role });
+    return this.eventsService.recordPublicTileEvent({
+      ...dto,
+      userId: user?.id,
+      role: user?.role,
+    });
   }
 
   @Public()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Record a customer journey stage event',
     description: 'Anonymous-safe; keyed by client-generated sessionId.',
   })
   @Post('journey')
   recordJourneyEvent(@Body() dto: RecordJourneyEventDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.eventsService.recordJourneyEvent({ ...dto, userId: user?.id, role: user?.role });
+    return this.eventsService.recordPublicJourneyEvent({
+      ...dto,
+      userId: user?.id,
+      role: user?.role,
+    });
   }
 }
