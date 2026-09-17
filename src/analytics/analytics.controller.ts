@@ -75,7 +75,7 @@ export class AnalyticsController {
     return this.analyticsService.tileRecommendations(query);
   }
 
-  @ApiOperation({ summary: 'Selection rate and purchase conversion for one tile' })
+  @ApiOperation({ summary: 'Lifetime interactions and conversion rates for one tile' })
   @Get('tiles/:productId')
   tileDetail(@Param('productId') productId: string) {
     return this.analyticsService.tileRates(productId);

@@ -14,21 +14,33 @@ import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 
 @Injectable()
 export class PaymentsService {
+  private readonly operationalStaffRoles: Role[] = [
+    Role.ADMIN,
+    Role.SALES_PERSON,
+    Role.STOCK_MANAGER,
+  ];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly momo: MomoProvider,
     private readonly card: CardProvider,
   ) {}
 
-  async initiate(dto: InitiatePaymentDto, actingUser: AuthenticatedUser) {
-    const order = await this.prisma.order.findUnique({ where: { id: dto.orderId } });
+  /** Customers may access only their own orders; operational staff may access any order. */
+  private async assertOrderAccess(orderId: string, actingUser: AuthenticatedUser) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) throw new NotFoundException('Order not found.');
 
-    const staffRoles: Role[] = [Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER];
-    const isStaff = staffRoles.includes(actingUser.role);
-    if (!isStaff && order.customerId !== actingUser.id) {
+    const isOperationalStaff = this.operationalStaffRoles.includes(actingUser.role);
+    if (!isOperationalStaff && order.customerId !== actingUser.id) {
       throw new ForbiddenException('You do not have access to this order.');
     }
+
+    return order;
+  }
+
+  async initiate(dto: InitiatePaymentDto, actingUser: AuthenticatedUser) {
+    const order = await this.assertOrderAccess(dto.orderId, actingUser);
 
     const provider = dto.method === PaymentMethod.MOMO ? this.momo : this.card;
     const result = await provider.initiate({
@@ -67,7 +79,8 @@ export class PaymentsService {
     });
   }
 
-  findForOrder(orderId: string) {
+  async findForOrder(orderId: string, actingUser: AuthenticatedUser) {
+    await this.assertOrderAccess(orderId, actingUser);
     return this.prisma.payment.findMany({ where: { orderId }, orderBy: { createdAt: 'desc' } });
   }
 }

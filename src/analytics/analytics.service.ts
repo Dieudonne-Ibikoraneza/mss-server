@@ -519,18 +519,30 @@ export class AnalyticsService {
     };
   }
 
-  /** Tile selection rate = applied / viewed * 100; purchase conversion = purchased / viewed * 100. */
+  /**
+   * Lifetime interaction totals for one tile. The detail surfaces use the
+   * complete interaction set (not just the two values needed to calculate
+   * the rates), so saves/"likes" and comparisons do not disappear when an
+   * analyst moves from the tiles table to the product itself.
+   */
   async tileRates(productId: string) {
-    const [viewed, applied, purchased] = await Promise.all([
-      this.prisma.tileEvent.count({ where: { productId, type: TileEventType.VIEWED } }),
-      this.prisma.tileEvent.count({ where: { productId, type: TileEventType.APPLIED } }),
-      this.prisma.tileEvent.count({ where: { productId, type: TileEventType.PURCHASED } }),
-    ]);
+    const interactions = await this.prisma.tileEvent.groupBy({
+      by: ['type'],
+      where: { productId },
+      _count: { _all: true },
+    });
+    const countOf = (type: TileEventType) =>
+      interactions.find((row) => row.type === type)?._count._all ?? 0;
+    const viewed = countOf(TileEventType.VIEWED);
+    const applied = countOf(TileEventType.APPLIED);
+    const purchased = countOf(TileEventType.PURCHASED);
 
     return {
       productId,
       viewed,
       applied,
+      compared: countOf(TileEventType.COMPARED),
+      saved: countOf(TileEventType.SAVED),
       purchased,
       selectionRate: percent(applied, viewed),
       purchaseConversion: percent(purchased, viewed),

@@ -21,8 +21,8 @@ export class PaymentsController {
 
   @ApiOperation({ summary: 'Get payment(s) for an order' })
   @Get('order/:orderId')
-  findForOrder(@Param('orderId') orderId: string) {
-    return this.paymentsService.findForOrder(orderId);
+  findForOrder(@Param('orderId') orderId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.paymentsService.findForOrder(orderId, user);
   }
 
   @Public()
