@@ -78,7 +78,10 @@ export class ProductsController {
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Check whether a SKU is free to use (admin/stock manager) — the registration/edit form polls this as the user types' })
+  @ApiOperation({
+    summary:
+      'Check whether a SKU is free to use (admin/stock manager) — the registration/edit form polls this as the user types',
+  })
   @Get('check-sku')
   checkSku(@Query() query: CheckSkuDto) {
     return this.productsService.checkSkuAvailability(query.sku, query.excludeId);

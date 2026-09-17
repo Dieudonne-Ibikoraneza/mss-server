@@ -170,8 +170,14 @@ export class GeminiChatProvider implements ChatProvider {
     const rawPicks = Array.isArray(parsed.picks) ? parsed.picks : [];
     const picks: ChatRecommendationPick[] = rawPicks
       .filter(
-        (p): p is { productId: unknown; wallProductId?: unknown; matchScore: unknown; reason: unknown } =>
-          typeof p === 'object' && p !== null,
+        (
+          p,
+        ): p is {
+          productId: unknown;
+          wallProductId?: unknown;
+          matchScore: unknown;
+          reason: unknown;
+        } => typeof p === 'object' && p !== null,
       )
       // Defense in depth: even though the model was only given real ids, never trust it blindly.
       .filter((p) => typeof p.productId === 'string' && candidatesById.has(p.productId))

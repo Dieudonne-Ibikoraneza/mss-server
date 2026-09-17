@@ -133,10 +133,13 @@ export class AnalyticsService {
     products: { id: string; image: string | null }[],
   ): Promise<Map<string, string | null>> {
     const entries = await Promise.all(
-      products.map(async (product) => [
-        product.id,
-        product.image ? await this.storage.resolveImageUrl(product.image) : null,
-      ] as const),
+      products.map(
+        async (product) =>
+          [
+            product.id,
+            product.image ? await this.storage.resolveImageUrl(product.image) : null,
+          ] as const,
+      ),
     );
     return new Map(entries);
   }
@@ -712,7 +715,9 @@ export class AnalyticsService {
 
     switch (stage) {
       case JourneyStage.SAVED_DESIGN: {
-        const designs = actions as unknown as { detail: { sharedWithSales: boolean; tileCount: number } }[];
+        const designs = actions as unknown as {
+          detail: { sharedWithSales: boolean; tileCount: number };
+        }[];
         const shared = designs.filter((row) => row.detail.sharedWithSales).length;
         const avgTiles = designs.length
           ? designs.reduce((sum, row) => sum + row.detail.tileCount, 0) / designs.length
@@ -767,7 +772,9 @@ export class AnalyticsService {
 
       case JourneyStage.VIEWED_TILE:
       case JourneyStage.APPLIED_TILE: {
-        const events = actions as unknown as { detail: { productId: string; productName: string } }[];
+        const events = actions as unknown as {
+          detail: { productId: string; productName: string };
+        }[];
         const byProduct = new Map<string, { name: string; count: number }>();
         for (const row of events) {
           const existing = byProduct.get(row.detail.productId);
@@ -787,7 +794,9 @@ export class AnalyticsService {
       }
 
       case JourneyStage.CREATED_ROOM: {
-        const rooms = actions as unknown as { detail: { roomType?: RoomType } | Prisma.JsonValue }[];
+        const rooms = actions as unknown as {
+          detail: { roomType?: RoomType } | Prisma.JsonValue;
+        }[];
         const byType = new Map<string, number>();
         for (const row of rooms) {
           const roomType =
@@ -814,12 +823,17 @@ export class AnalyticsService {
               : undefined,
           )
           .filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
-        const avgArea = entries.length ? entries.reduce((sum, v) => sum + v, 0) / entries.length : 0;
+        const avgArea = entries.length
+          ? entries.reduce((sum, v) => sum + v, 0) / entries.length
+          : 0;
         return [
           ...base,
           { key: 'totalEntries', value: actions.length },
           { key: 'avgAreaSqm', value: Math.round(avgArea * 10) / 10 },
-          { key: 'maxAreaSqm', value: entries.length ? Math.round(Math.max(...entries) * 10) / 10 : 0 },
+          {
+            key: 'maxAreaSqm',
+            value: entries.length ? Math.round(Math.max(...entries) * 10) / 10 : 0,
+          },
         ];
       }
 

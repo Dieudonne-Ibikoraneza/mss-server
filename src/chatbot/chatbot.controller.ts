@@ -24,7 +24,7 @@ import { ChatbotService } from './chatbot.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto } from './dto/media-preview.dto';
-import { UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
+import { UpdateKnowledgeBaseEntryDto, UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
 import { RecommendationDecisionDto } from './dto/recommendation-decision.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
@@ -146,10 +146,28 @@ export class ChatbotController {
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List all knowledge base entries, including inactive ones (admin only)',
+  })
+  @Get('admin/knowledge-base')
+  listKnowledgeBaseForAdmin() {
+    return this.chatbotService.listKnowledgeBaseForAdmin();
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a knowledge base entry (admin only)' })
   @Post('knowledge-base')
   createKnowledgeBaseEntry(@Body() dto: UpsertKnowledgeBaseEntryDto) {
     return this.chatbotService.createKnowledgeBaseEntry(dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update a knowledge base entry (admin only)' })
+  @Patch('knowledge-base/:id')
+  updateKnowledgeBaseEntry(@Param('id') id: string, @Body() dto: UpdateKnowledgeBaseEntryDto) {
+    return this.chatbotService.updateKnowledgeBaseEntry(id, dto);
   }
 
   @Roles(Role.ADMIN)
