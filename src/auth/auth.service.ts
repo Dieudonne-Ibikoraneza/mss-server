@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { UserStatus } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -85,6 +86,13 @@ export class AuthService {
       throw new NotFoundException('No account found for this email. Please register first.');
     }
 
+    // Inactive/suspended accounts get no OTP — but the response is
+    // indistinguishable from a real send, so the endpoint doesn't leak
+    // account status to whoever is asking.
+    if (user.status !== UserStatus.ACTIVE) {
+      return this.genericOtpResponse();
+    }
+
     return this.otp.send(dto.email, 'email', 'login', user.language);
   }
 
@@ -100,6 +108,10 @@ export class AuthService {
       throw new NotFoundException(
         'No account or pending registration found for this email. Please register first.',
       );
+    }
+
+    if (user.status !== UserStatus.ACTIVE) {
+      return this.genericOtpResponse();
     }
 
     return this.otp.send(dto.email, 'email', 'login', user.language);
@@ -135,6 +147,10 @@ export class AuthService {
     const valid = await this.otp.verify(dto.email, 'login', dto.otp);
     if (!valid) throw new BadRequestException('Invalid or expired verification code.');
 
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('This account is not active.');
+    }
+
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     return this.issueTokens(user.id, user.role);
   }
@@ -148,6 +164,16 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({ where: { id: stored.userId } });
     if (!user) throw new UnauthorizedException('Account no longer exists.');
+
+    if (user.status !== UserStatus.ACTIVE) {
+      // The account went inactive/suspended after this token was issued —
+      // burn it now rather than letting it keep rotating.
+      await this.prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
+      });
+      throw new UnauthorizedException('This account is not active.');
+    }
 
     await this.prisma.refreshToken.update({
       where: { id: stored.id },
@@ -167,6 +193,20 @@ export class AuthService {
 
   private hashToken(token: string) {
     return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
+   * Same shape as `OtpService.send`'s success response, returned without
+   * actually sending a code. Keeps login/resend indistinguishable whether
+   * the account is active or inactive/suspended.
+   */
+  private genericOtpResponse() {
+    const ttlSeconds = this.config.get<number>('otp.ttlSeconds') ?? 300;
+    const minutes = Math.round(ttlSeconds / 60);
+    return {
+      message: `If this account can sign in, we've sent a verification code to it. It expires in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      expiresInSeconds: ttlSeconds,
+    };
   }
 
   private async issueTokens(userId: string, role: AuthenticatedUser['role']): Promise<TokenPair> {

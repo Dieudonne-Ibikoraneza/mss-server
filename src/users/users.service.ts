@@ -188,6 +188,21 @@ export class UsersService {
       throw new BadRequestException('You cannot deactivate your own account.');
     }
     await this.findStaffById(id);
+
+    if (status === 'INACTIVE') {
+      // Deactivation must take effect immediately, not just on the next
+      // access-token expiry — revoke every refresh token so the account
+      // can't keep rotating in new ones.
+      const [user] = await this.prisma.$transaction([
+        this.prisma.user.update({ where: { id }, data: { status }, select: SAFE_USER_SELECT }),
+        this.prisma.refreshToken.updateMany({
+          where: { userId: id, revokedAt: null },
+          data: { revokedAt: new Date() },
+        }),
+      ]);
+      return user;
+    }
+
     return this.prisma.user.update({ where: { id }, data: { status }, select: SAFE_USER_SELECT });
   }
 
