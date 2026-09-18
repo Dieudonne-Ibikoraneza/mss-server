@@ -4,7 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentMethod, PaymentStatus, Prisma, Role } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+  Prisma,
+  QuotationStatus,
+  Role,
+} from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { MomoProvider } from './providers/momo.provider';
@@ -39,8 +46,25 @@ export class PaymentsService {
     return order;
   }
 
+  /**
+   * A payment is only meaningful once a quotation has gone out — before that
+   * `order.total` is just the subtotal (no transport fee yet), and cancelled
+   * orders never accept payment even if a quotation was sent before cancellation.
+   */
+  private assertPaymentReady(order: { status: OrderStatus; quotationStatus: QuotationStatus }) {
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('This order has been cancelled and cannot accept payment.');
+    }
+    if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
+      throw new BadRequestException(
+        'A payment can only be initiated once a quotation has been sent for this order and is still awaiting payment.',
+      );
+    }
+  }
+
   async initiate(dto: InitiatePaymentDto, actingUser: AuthenticatedUser) {
     const order = await this.assertOrderAccess(dto.orderId, actingUser);
+    this.assertPaymentReady(order);
 
     const provider = dto.method === PaymentMethod.MOMO ? this.momo : this.card;
     const result = await provider.initiate({
