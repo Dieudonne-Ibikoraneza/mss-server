@@ -43,6 +43,19 @@ export type SettingKey = keyof typeof SETTINGS_DEFAULTS;
 
 export const SETTING_KEYS = Object.keys(SETTINGS_DEFAULTS) as SettingKey[];
 
+/** Settings safe and useful to an anonymous storefront visitor. */
+export const PUBLIC_SETTING_KEYS = [
+  'platform.name',
+  'platform.defaultCurrency',
+  'platform.defaultLanguage',
+  'support.phone',
+  'support.email',
+  'support.whatsapp',
+  'calculator.defaultWastagePercent',
+] as const satisfies readonly SettingKey[];
+
+export type PublicSettingKey = (typeof PUBLIC_SETTING_KEYS)[number];
+
 const KNOWN_KEYS = new Set<string>(SETTING_KEYS);
 
 export const isSettingKey = (key: string): key is SettingKey => KNOWN_KEYS.has(key);

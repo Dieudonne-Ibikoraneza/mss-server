@@ -30,11 +30,17 @@ export class SettingsController {
 
   @Public()
   @ApiOperation({
-    summary: 'Read the platform settings',
-    description:
-      'Public because the storefront needs the platform name, currency, payment and support details.',
+    summary: 'Read public storefront settings',
+    description: 'Returns only the explicitly public platform, support, and calculator settings.',
   })
   @Get()
+  findPublic() {
+    return this.settingsService.findPublic();
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Read all platform settings (admin)' })
+  @Get('admin')
   findAll() {
     return this.settingsService.findAll();
   }

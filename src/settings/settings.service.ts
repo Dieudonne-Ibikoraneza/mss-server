@@ -1,7 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Language, Prisma, RoomType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
-import { SETTINGS_DEFAULTS, isSettingKey, type SettingKey } from './settings.defaults';
+import {
+  PUBLIC_SETTING_KEYS,
+  SETTINGS_DEFAULTS,
+  isSettingKey,
+  type PublicSettingKey,
+  type SettingKey,
+} from './settings.defaults';
 import {
   CreateProfilingQuestionDto,
   ReorderProfilingQuestionsDto,
@@ -26,6 +32,14 @@ export class SettingsService {
       if (isSettingKey(row.key)) settings[row.key] = row.value;
     }
     return settings;
+  }
+
+  async findPublic(): Promise<Record<PublicSettingKey, unknown>> {
+    const settings = await this.findAll();
+    return Object.fromEntries(PUBLIC_SETTING_KEYS.map((key) => [key, settings[key]])) as Record<
+      PublicSettingKey,
+      unknown
+    >;
   }
 
   async update(patch: Record<string, unknown>) {
