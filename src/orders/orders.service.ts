@@ -31,6 +31,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
+import { InsufficientStockError, reserveAreaAtomically } from './stock-reservation.util';
 import { canTransitionOrderStatus, ORDER_STATUS_TRANSITIONS } from './order-status-transitions';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
@@ -476,47 +477,40 @@ export class OrdersService {
     for (const order of waitlisted) {
       try {
         const promoted = await this.prisma.$transaction(async (tx) => {
-          // Re-read fresh — an earlier order promoted earlier in this same
-          // pass may have just claimed the stock this one also needs.
-          const fresh = await tx.product.findMany({
-            where: { id: { in: order.items.map((item) => item.productId) } },
+          // Claim the order first: a second worker (another server, an
+          // overlapping sweep) or a cancellation that got here first leaves
+          // nothing to claim, so stock is never reserved twice for one order
+          // or for one that is no longer waitlisted.
+          const reservationMinutes = Math.round(this.reservationWindowMs() / 60_000);
+          const claimed = await tx.order.updateMany({
+            where: { id: order.id, status: OrderStatus.WAITLISTED },
+            data: {
+              status: OrderStatus.PENDING,
+              reservationExpiresAt: new Date(Date.now() + this.reservationWindowMs()),
+              waitlistPromotedAt: new Date(),
+            },
           });
-          const byId = new Map(fresh.map((product) => [product.id, product]));
+          if (claimed.count === 0) return false;
 
-          const stillShort = order.items.some((item) => {
-            const product = byId.get(item.productId)!;
-            const available = availableAreaSqmOf(
-              Number(product.quantityOnHandSqm),
-              Number(product.reservedAreaSqm),
-            );
-            return purchasedAreaOf(item) > available;
-          });
-          if (stillShort) return false;
-
-          await this.bulkAdjustProductArea(
+          // Reserves only where the stock is still there, checked inside the
+          // UPDATE itself — a read-then-add here would let two promotions
+          // (or a promotion and a checkout) take the same tiles. Throws, and
+          // so rolls the claim back, if any product has come up short.
+          await reserveAreaAtomically(
             tx,
-            'reservedAreaSqm',
             order.items.map((item) => ({
               productId: item.productId,
               deltaAreaSqm: purchasedAreaOf(item),
             })),
           );
 
-          const reservationMinutes = Math.round(this.reservationWindowMs() / 60_000);
-          await tx.order.update({
-            where: { id: order.id },
+          await tx.orderStatusEvent.create({
             data: {
+              orderId: order.id,
               status: OrderStatus.PENDING,
-              reservationExpiresAt: new Date(Date.now() + this.reservationWindowMs()),
-              waitlistPromotedAt: new Date(),
-              statusEvents: {
-                create: {
-                  status: OrderStatus.PENDING,
-                  note:
-                    'Enough stock is now available — promoted off the waitlist and held for you. ' +
-                    `Once the quotation is sent you will have ${reservationMinutes} minutes to complete payment.`,
-                },
-              },
+              note:
+                'Enough stock is now available — promoted off the waitlist and held for you. ' +
+                `Once the quotation is sent you will have ${reservationMinutes} minutes to complete payment.`,
             },
           });
           return true;
@@ -538,6 +532,8 @@ export class OrdersService {
           );
         }
       } catch (error) {
+        // Not enough stock for this order right now — it stays waitlisted.
+        if (error instanceof InsufficientStockError) continue;
         const message = error instanceof Error ? error.message : 'unknown error';
         this.logger.error(`Failed to promote waitlisted order ${order.id}: ${message}`);
       }
@@ -559,7 +555,28 @@ export class OrdersService {
     }
   }
 
-  async create(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
+  async create(
+    dto: CreateOrderDto,
+    actingUser: AuthenticatedUser,
+    attempt = 1,
+  ): Promise<Awaited<ReturnType<OrdersService['createOnce']>>> {
+    try {
+      return await this.createOnce(dto, actingUser);
+    } catch (error) {
+      // Someone else took the stock between this order's availability read and
+      // its reservation. Re-run from the read so it is judged on the new numbers
+      // (waitlisted, or negotiated) instead of failing the customer's checkout.
+      if (error instanceof InsufficientStockError && attempt < 3) {
+        return this.create(dto, actingUser, attempt + 1);
+      }
+      if (error instanceof InsufficientStockError) {
+        throw new ConflictException('Stock changed while placing this order. Please try again.');
+      }
+      throw error;
+    }
+  }
+
+  private async createOnce(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
     const isStaff = STAFF_ROLES.includes(actingUser.role);
     if (dto.customerId && !isStaff) {
       throw new ForbiddenException('Only staff can place an order on behalf of another customer.');
@@ -594,9 +611,9 @@ export class OrdersService {
      * (see `updateStatus` below) — but `reservedAreaSqm` (other customers'
      * still-open payment windows) is subtracted from it here, so this
      * already accounts for stock currently on hold, not just on the shelf.
-     * Still a point-in-time read ahead of the transaction below, so it can
-     * in principle race a concurrent order for the last sliver of stock —
-     * accepted here the same way the rest of this codebase accepts it.
+     * Still a point-in-time read ahead of the transaction below — the
+     * reservation inside it is what's atomic (`reserveAreaAtomically`), and
+     * `create` re-runs this whole read if it loses that race.
      *
      * Two different kinds of shortage, and only one of them is waitlist-able:
      * - `available` (on hand minus what other customers' open orders are
@@ -754,14 +771,18 @@ export class OrdersService {
 
       // Nothing to hold yet for a waitlisted order — see `promoteWaitlistedOrders`.
       if (!isWaitlisted) {
-        await this.bulkAdjustProductArea(
-          tx,
-          'reservedAreaSqm',
-          lineItems.map((line) => ({
-            productId: line.product.id,
-            deltaAreaSqm: line.quantity.purchasedArea,
-          })),
-        );
+        const holds = lineItems.map((line) => ({
+          productId: line.product.id,
+          deltaAreaSqm: line.quantity.purchasedArea,
+        }));
+        if (shortages.length === 0) {
+          // The order was judged fully covered — hold that stock only if it's
+          // still there, or roll back (and `create` re-decides).
+          await reserveAreaAtomically(tx, holds);
+        } else {
+          // Staff deliberately reserving past a shortage for a customer.
+          await this.bulkAdjustProductArea(tx, 'reservedAreaSqm', holds);
+        }
       }
 
       const message =
@@ -1080,76 +1101,98 @@ export class OrdersService {
       ]),
     ];
 
-    await this.prisma.$transaction(async (tx) => {
-      const reservationDeltas: { productId: string; deltaAreaSqm: number }[] = [];
-      if (order.reservationExpiresAt !== null) {
-        for (const [productId, heldArea] of oldHeldByProduct) {
-          reservationDeltas.push({ productId, deltaAreaSqm: -heldArea });
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const reservationDeltas: { productId: string; deltaAreaSqm: number }[] = [];
+        if (order.reservationExpiresAt !== null) {
+          for (const [productId, heldArea] of oldHeldByProduct) {
+            reservationDeltas.push({ productId, deltaAreaSqm: -heldArea });
+          }
         }
-      }
-      if (!isWaitlisted) {
-        for (const item of revisedItems) {
-          reservationDeltas.push({
-            productId: item.product.id,
-            deltaAreaSqm: item.quantity.purchasedArea,
-          });
-        }
-      }
-      // One statement covers both the old holds' release and the new ones'
-      // reservation — `bulkAdjustProductArea` nets same-product entries
-      // (e.g. a line whose quantity just changed) into a single delta.
-      await this.bulkAdjustProductArea(tx, 'reservedAreaSqm', reservationDeltas);
-
-      await tx.orderItem.deleteMany({ where: { orderId: id } });
-      await tx.order.update({
-        where: { id },
-        data: {
-          status: nextStatus,
-          subtotal,
-          total: subtotal,
-          notes: dto.notes ?? order.notes,
-          reservationExpiresAt: nextReservationExpiry,
-          quotationStatus: QuotationStatus.AWAITING_REVIEW,
-          transportFee: null,
-          transportFeeNote: null,
-          quotationSentAt: null,
-          quotationViewedAt: null,
-          paymentSubmittedAt: null,
-          paymentVerifiedAt: null,
-          items: {
-            create: revisedItems.map((item) => ({
+        if (!isWaitlisted) {
+          for (const item of revisedItems) {
+            reservationDeltas.push({
               productId: item.product.id,
-              requiredAreaSqm: item.quantity.requiredArea,
-              boxes: item.quantity.completeBoxes,
-              additionalPieces: item.quantity.remainingPieces,
-              totalPieces: item.quantity.totalPieces,
-              unitPrice: item.unitPrice,
-              totalPrice: item.totalPrice,
-            })),
-          },
-          statusEvents: {
-            create: {
-              status: nextStatus,
-              createdById: actingUser.id,
-              note: `Order quantities updated by ${actingUser.role === Role.ADMIN ? 'an administrator' : 'the stock team'}.`,
+              deltaAreaSqm: item.quantity.purchasedArea,
+            });
+          }
+        }
+        // One statement covers both the old holds' release and the new ones'
+        // reservation — `bulkAdjustProductArea` nets same-product entries
+        // (e.g. a line whose quantity just changed) into a single delta.
+        // Claim the order as it was read: a concurrent revision (or payment)
+        // would otherwise release the old holds a second time. Any other write
+        // to the order in between (`updatedAt` moves) makes this retry-able.
+        const claimed = await tx.order.updateMany({
+          where: { id, status: order.status, updatedAt: order.updatedAt },
+          data: { status: order.status },
+        });
+        if (claimed.count === 0) {
+          throw new ConflictException(
+            'This order changed while it was being edited. Refresh and try again.',
+          );
+        }
+        // Only what's still available may be newly reserved; a net release always applies.
+        await reserveAreaAtomically(tx, reservationDeltas);
+
+        await tx.orderItem.deleteMany({ where: { orderId: id } });
+        await tx.order.update({
+          where: { id },
+          data: {
+            status: nextStatus,
+            subtotal,
+            total: subtotal,
+            notes: dto.notes ?? order.notes,
+            reservationExpiresAt: nextReservationExpiry,
+            quotationStatus: QuotationStatus.AWAITING_REVIEW,
+            transportFee: null,
+            transportFeeNote: null,
+            quotationSentAt: null,
+            quotationViewedAt: null,
+            paymentSubmittedAt: null,
+            paymentVerifiedAt: null,
+            items: {
+              create: revisedItems.map((item) => ({
+                productId: item.product.id,
+                requiredAreaSqm: item.quantity.requiredArea,
+                boxes: item.quantity.completeBoxes,
+                additionalPieces: item.quantity.remainingPieces,
+                totalPieces: item.quantity.totalPieces,
+                unitPrice: item.unitPrice,
+                totalPrice: item.totalPrice,
+              })),
+            },
+            statusEvents: {
+              create: {
+                status: nextStatus,
+                createdById: actingUser.id,
+                note: `Order quantities updated by ${actingUser.role === Role.ADMIN ? 'an administrator' : 'the stock team'}.`,
+              },
+            },
+            messages: {
+              create: {
+                author: OrderMessageAuthor.STAFF,
+                senderId: actingUser.id,
+                body: isWaitlisted
+                  ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
+                  : 'The order quantities were updated by the stock team. The quotation will be prepared again for the revised order.',
+                metadata:
+                  shortages.length > 0
+                    ? ({ shortages } as unknown as Prisma.InputJsonValue)
+                    : undefined,
+              },
             },
           },
-          messages: {
-            create: {
-              author: OrderMessageAuthor.STAFF,
-              senderId: actingUser.id,
-              body: isWaitlisted
-                ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
-                : 'The order quantities were updated by the stock team. The quotation will be prepared again for the revised order.',
-              metadata:
-                shortages.length > 0
-                  ? ({ shortages } as unknown as Prisma.InputJsonValue)
-                  : undefined,
-            },
-          },
-        },
+        });
       });
-    });
+    } catch (error) {
+      if (error instanceof InsufficientStockError) {
+        throw new ConflictException(
+          'Stock changed while this order was being edited. Refresh and try again.',
+        );
+      }
+      throw error;
+    }
 
     await invalidateProductsCache(this.redis, productIds);
     return this.findOne(id, actingUser);
