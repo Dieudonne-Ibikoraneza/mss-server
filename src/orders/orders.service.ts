@@ -1061,12 +1061,19 @@ export class OrdersService {
       };
     });
 
+    // Only an order that actually holds stock has an old hold to hand back. A
+    // WAITLISTED one holds nothing, so its quantity is not in
+    // `reservedAreaSqm` — subtracting it would count other orders' holds as
+    // available and reserve tiles that belong to them.
+    const holdsStock = order.reservationExpiresAt !== null;
     const oldHeldByProduct = new Map<string, number>();
-    for (const item of order.items) {
-      oldHeldByProduct.set(
-        item.productId,
-        (oldHeldByProduct.get(item.productId) ?? 0) + purchasedAreaOf(item),
-      );
+    if (holdsStock) {
+      for (const item of order.items) {
+        oldHeldByProduct.set(
+          item.productId,
+          (oldHeldByProduct.get(item.productId) ?? 0) + purchasedAreaOf(item),
+        );
+      }
     }
 
     const shortages: StockShortage[] = [];
@@ -1088,7 +1095,12 @@ export class OrdersService {
       }
     }
 
-    const isWaitlisted = shortages.length > 0;
+    // A waitlisted order keeps its place in the queue however it is revised —
+    // it never jumps to PENDING here, even if the new quantity fits right now.
+    // Older waitlisted orders have first claim on free stock, so promotion is
+    // left to `promoteWaitlistedOrders` (oldest first), run after this commits.
+    const wasWaitlisted = order.status === OrderStatus.WAITLISTED;
+    const isWaitlisted = wasWaitlisted || shortages.length > 0;
     const subtotal = revisedItems.reduce((sum, item) => sum + item.totalPrice, 0);
     const nextStatus = isWaitlisted ? OrderStatus.WAITLISTED : OrderStatus.PENDING;
     const nextReservationExpiry = isWaitlisted
@@ -1104,10 +1116,8 @@ export class OrdersService {
     try {
       await this.prisma.$transaction(async (tx) => {
         const reservationDeltas: { productId: string; deltaAreaSqm: number }[] = [];
-        if (order.reservationExpiresAt !== null) {
-          for (const [productId, heldArea] of oldHeldByProduct) {
-            reservationDeltas.push({ productId, deltaAreaSqm: -heldArea });
-          }
+        for (const [productId, heldArea] of oldHeldByProduct) {
+          reservationDeltas.push({ productId, deltaAreaSqm: -heldArea });
         }
         if (!isWaitlisted) {
           for (const item of revisedItems) {
@@ -1174,7 +1184,9 @@ export class OrdersService {
                 author: OrderMessageAuthor.STAFF,
                 senderId: actingUser.id,
                 body: isWaitlisted
-                  ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
+                  ? shortages.length > 0
+                    ? 'The order was updated, but part of the revised quantity is still waiting on stock.'
+                    : 'The order was updated and remains on the waitlist — it will be promoted, in order, as soon as stock is available.'
                   : 'The order quantities were updated by the stock team. The quotation will be prepared again for the revised order.',
                 metadata:
                   shortages.length > 0
@@ -1195,6 +1207,9 @@ export class OrdersService {
     }
 
     await invalidateProductsCache(this.redis, productIds);
+    // A smaller revision, or a held order falling back to the waitlist, frees
+    // stock — and a revised waitlisted order may now be next in line for it.
+    await this.promoteWaitlistedOrders(productIds);
     return this.findOne(id, actingUser);
   }
 
