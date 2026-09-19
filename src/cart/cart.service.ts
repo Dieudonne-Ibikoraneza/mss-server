@@ -62,14 +62,10 @@ export class CartService {
 
     const lines = await Promise.all(
       items.map(async (item) => {
-        // averageCostPrice pulled out explicitly — never shown to clients (doc
-        // 3.2). `quantityOnHandSqm` gets a narrow, deliberate exception right
-        // below: unlike the public catalog (badge-only), a cart line also
-        // carries the exact `availableAreaSqm` so the page can tell, live and
-        // without a round trip, whether the *quantity currently typed* — not
-        // just the product overall — exceeds stock. This isn't a new leak: the
-        // same exact number is already returned to this same customer the
-        // moment they place the order (`orders.service.ts#create`'s `shortages`).
+        // Staff-only fields pulled out explicitly — never shown to clients (doc
+        // 3.2): the exact on-hand and reserved figures, the cost, and (below) the
+        // available area derived from them. A cart line carries only the
+        // server-computed `exceedsStock` verdict and the `stockStatus` badge.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { collection, quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } =
           item.product;
@@ -92,9 +88,8 @@ export class CartService {
           ...item,
           // Mirrors `ProductsService`'s serialization — a cart line's product
           // needs the same computed `size`/`stockStatus` every other product
-          // response carries, plus `availableAreaSqm` (see above) so the
-          // shortage banner tracks the actual requested quantity, not just the
-          // product's general stock badge.
+          // response carries. The exact available area is deliberately absent:
+          // whether *this line's quantity* fits is `exceedsStock` below, decided here.
           product: {
             ...productRest,
             image: await this.resolveImageUrl(productRest.image),
@@ -102,7 +97,6 @@ export class CartService {
             size: collection.size,
             tileAreaSqm: Number(collection.tileAreaSqm),
             stockStatus: stockStatusOf(availableAreaSqm, lowStockThreshold),
-            availableAreaSqm,
           },
           quantity,
           totalPrice,

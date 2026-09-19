@@ -66,6 +66,17 @@ function sanitizeOrder<T extends { items: readonly { product: Record<string, unk
   if (canSeeExactStock(viewerRole)) return order;
   return {
     ...order,
+    // Older waitlisted orders stored "(requested N sqm, M sqm available)" in
+    // their timeline note — the exact available figure is staff-only.
+    ...('statusEvents' in order && Array.isArray(order.statusEvents)
+      ? {
+          statusEvents: (order.statusEvents as { note?: string | null }[]).map((event) =>
+            typeof event.note === 'string'
+              ? { ...event, note: stripAvailableFigures(event.note) }
+              : event,
+          ),
+        }
+      : {}),
     items: order.items.map((item) => {
       if (!item.product) return item;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -74,6 +85,19 @@ function sanitizeOrder<T extends { items: readonly { product: Record<string, unk
     }),
   };
 }
+
+/** Removes the ", M sqm available" part of a shortage summary — the exact available area is staff-only. */
+const stripAvailableFigures = (note: string) => note.replace(/,\s*[\d.,]+\s*sqm available/gi, '');
+
+/** A SYSTEM message's `metadata` with every shortage's `availableAreaSqm` removed. */
+const withoutAvailableFigures = (metadata: Prisma.JsonValue) => {
+  const shortages = (metadata as { shortages?: unknown } | null)?.shortages;
+  if (!Array.isArray(shortages)) return metadata;
+  return {
+    ...(metadata as Prisma.JsonObject),
+    shortages: shortagesForCustomer(shortages as StockShortage[]),
+  };
+};
 
 export interface StockShortage {
   productId: string;
@@ -747,10 +771,7 @@ export class OrdersService {
       : new Date(Date.now() + this.reservationWindowMs());
 
     const shortageSummary = shortages
-      .map(
-        (s) =>
-          `${s.productName} (requested ${s.requestedAreaSqm} sqm, ${s.availableAreaSqm} sqm available)`,
-      )
+      .map((s) => `${s.productName} (requested ${s.requestedAreaSqm} sqm)`)
       .join('; ');
 
     const { order, systemMessage } = await this.prisma.$transaction(async (tx) => {
@@ -834,8 +855,14 @@ export class OrdersService {
     if (systemMessage) {
       // Fired after the transaction commits — a socket push for a message
       // that then rolled back would be worse than no push at all.
+      // The room holds the customer as well as staff, so what's pushed is the
+      // customer-safe form — the exact available figure stays in the stored
+      // message's metadata, which staff read through `listMessages`.
       await this.bestEffort(`socket push for order ${order.id}`, () =>
-        this.negotiations.emitMessage('order', order.id, systemMessage),
+        this.negotiations.emitMessage('order', order.id, {
+          ...systemMessage,
+          metadata: withoutAvailableFigures(systemMessage.metadata),
+        }),
       );
     }
     await this.bestEffort(`product cache invalidation for order ${order.id}`, () =>

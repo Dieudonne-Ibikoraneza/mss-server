@@ -113,3 +113,44 @@ describe('OrdersService#updateItems — availability for a revised order', () =>
     expect(revisedStatus()).toBe(OrderStatus.PENDING);
   });
 });
+
+describe('OrdersService — exact available stock never reaches a customer through an order', () => {
+  const legacy =
+    'Order accepted and waitlisted — waiting for enough stock: Tile (requested 4 sqm, 2 sqm available).';
+  const order = {
+    id: 'o1',
+    customerId: 'customer-1',
+    items: [],
+    statusEvents: [{ note: legacy }, { note: null }, { note: 'Order placed.' }],
+  };
+
+  const notesFor = async (role: Role) => {
+    const prisma = { order: { findUnique: jest.fn().mockResolvedValue(order) } };
+    const service = new OrdersService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const result = (await service.findOne('o1', { id: 'customer-1', role } as never)) as {
+      statusEvents: { note: string | null }[];
+    };
+    return result.statusEvents.map((event) => event.note);
+  };
+
+  it("strips the available figure from a customer's timeline notes (older orders stored it)", async () => {
+    expect(await notesFor(Role.CLIENT)).toEqual([
+      'Order accepted and waitlisted — waiting for enough stock: Tile (requested 4 sqm).',
+      null,
+      'Order placed.',
+    ]);
+  });
+
+  it('leaves the notes untouched for stock staff', async () => {
+    expect((await notesFor(Role.STOCK_MANAGER))[0]).toBe(legacy);
+  });
+});
