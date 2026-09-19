@@ -20,6 +20,9 @@ import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
+  // The data analyst is read-only: every order write below names its roles, so
+  // that role is refused at the route (and again in `OrdersService`).
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
   @ApiOperation({ summary: 'Create an order' })
   @Post()
   create(@Body() dto: CreateOrderDto, @CurrentUser() user: AuthenticatedUser) {
@@ -63,6 +66,7 @@ export class OrdersController {
     return this.ordersService.updateItems(id, dto, user);
   }
 
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
   @ApiOperation({
     summary: 'Save the delivery details for an order',
     description: 'The customer who owns the order, or any staff member on their behalf.',
@@ -109,6 +113,7 @@ export class OrdersController {
     res.send(pdf);
   }
 
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
   @ApiOperation({ summary: 'Mark the quotation as paid (customer)' })
   @Post(':id/quotation/payment-submitted')
   markPaymentSubmitted(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {

@@ -193,6 +193,17 @@ export class OrdersService {
   }
 
   /** Loads an order and enforces "your own order, or you're staff". */
+  /**
+   * The data analyst can read orders (`isStaff`) but never change one — no
+   * placing, no delivery details, no payment declarations. The controller
+   * routes already exclude the role; this keeps the service safe on its own.
+   */
+  private assertCanWriteOrders(actingUser: AuthenticatedUser) {
+    if (actingUser.role === Role.DATA_ANALYST) {
+      throw new ForbiddenException('The data analyst role is read-only.');
+    }
+  }
+
   private async assertAccess(orderId: string, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) throw new NotFoundException('Order not found.');
@@ -570,6 +581,7 @@ export class OrdersService {
     actingUser: AuthenticatedUser,
     attempt = 1,
   ): Promise<Awaited<ReturnType<OrdersService['createOnce']>>> {
+    this.assertCanWriteOrders(actingUser);
     try {
       return await this.createOnce(dto, actingUser);
     } catch (error) {
@@ -1260,6 +1272,7 @@ export class OrdersService {
     dto: SaveDeliveryDetailsDto,
     actingUser: AuthenticatedUser,
   ) {
+    this.assertCanWriteOrders(actingUser);
     const order = await this.assertAccess(id, actingUser);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.AWAITING_REVIEW) {
@@ -1465,6 +1478,7 @@ export class OrdersService {
 
   /** The customer telling us they have paid — verification is a separate, staff-side step. */
   async markPaymentSubmitted(id: string, actingUser: AuthenticatedUser) {
+    this.assertCanWriteOrders(actingUser);
     const order = await this.assertAccess(id, actingUser);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
