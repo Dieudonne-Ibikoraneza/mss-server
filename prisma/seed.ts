@@ -423,29 +423,31 @@ async function main() {
     {
       key: 'ORDER_WAITLIST_AVAILABLE',
       language: Language.EN,
-      subject: 'Good news — order {{orderNumber}} is ready to pay',
+      subject: 'Good news — order {{orderNumber}} is now reserved for you',
       bodyText:
         "Hi {{fullName}},\n\nEnough stock is now available for order {{orderNumber}} — it's been moved " +
-        "off the waitlist and you have a short window to complete payment before it's released again:\n\n{{orderUrl}}",
+        "off the waitlist and the stock is held for you. We'll email you your quotation shortly; " +
+        "the payment window starts once it's sent:\n\n{{orderUrl}}",
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Hi {{fullName}},</p>
         <p style="font-size: 15px; margin: 0 0 16px;">Enough stock is now available for order <strong>{{orderNumber}}</strong> — it's been moved off the waitlist.</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">You have a short window to complete payment before it's released again.</p>
-        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Complete payment</a></p>
+        <p style="font-size: 15px; margin: 0 0 16px;">The stock is held for you. We'll email you your quotation shortly — your payment window starts once it's sent.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">View order</a></p>
       `),
     },
     {
       key: 'ORDER_WAITLIST_AVAILABLE',
       language: Language.RW,
-      subject: 'Amakuru meza — itumizo {{orderNumber}} riteguye kwishyurwa',
+      subject: 'Amakuru meza — itumizo {{orderNumber}} ryabikiwe',
       bodyText:
         'Muraho {{fullName}},\n\nUbu ububiko buhagije buraboneka ku itumizo {{orderNumber}} — ryakuwe ku ' +
-        "rutonde rw'abategereje. Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi:\n\n{{orderUrl}}",
+        "rutonde rw'abategereje, kandi ibicuruzwa byabikiwe. Turaguha igiciro vuba; igihe cyo kwishyura gitangira " +
+        "igiciro kimaze koherezwa:\n\n{{orderUrl}}",
       bodyHtml: emailShell(`
         <p style="font-size: 15px; margin: 0 0 16px;">Muraho {{fullName}},</p>
         <p style="font-size: 15px; margin: 0 0 16px;">Ubu ububiko buhagije buraboneka ku itumizo <strong>{{orderNumber}}</strong> — ryakuwe ku rutonde rw'abategereje.</p>
-        <p style="font-size: 15px; margin: 0 0 16px;">Ufite igihe gito cyo kwishyura mbere y'uko busubizwa ku bandi.</p>
-        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Ishyura nonaha</a></p>
+        <p style="font-size: 15px; margin: 0 0 16px;">Ibicuruzwa byabikiwe. Turaguha igiciro vuba — igihe cyo kwishyura gitangira igiciro kimaze koherezwa.</p>
+        <p style="margin: 0 0 16px;"><a href="{{orderUrl}}" style="display: inline-block; background: #b8860b; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600;">Reba itumizo</a></p>
       `),
     },
     {

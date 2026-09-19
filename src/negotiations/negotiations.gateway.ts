@@ -35,7 +35,7 @@ interface SocketUser {
  */
 type AppSocket = Omit<Socket, 'data'> & { data: { user?: SocketUser } };
 
-const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN, Role.DATA_ANALYST];
+const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
 const STAFF_ROOM = 'staff';
 
 const roomOf = ({ kind, id }: JoinPayload) => `${kind}:${id}`;
@@ -103,6 +103,10 @@ export class NegotiationsGateway implements OnGatewayInit, OnGatewayConnection {
           });
           const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
           if (!user || user.status !== 'ACTIVE') throw new Error('Account is not active.');
+          // Negotiations are off-limits to the data analyst, live feed included.
+          if (user.role === Role.DATA_ANALYST) {
+            throw new Error('Negotiations are not available for this role.');
+          }
 
           socket.data.user = { id: user.id, role: user.role };
           next();

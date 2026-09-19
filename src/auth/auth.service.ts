@@ -21,6 +21,8 @@ import { DISCOVERY_SOURCES, type DiscoverySourceOption } from './discovery-sourc
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+  /** When the refresh token stops being valid — the cookie that carries it lives exactly that long. */
+  refreshExpiresAt: Date;
 }
 
 interface PendingRegistration {
@@ -226,7 +228,7 @@ export class AuthService {
       data: { userId, tokenHash: this.hashToken(refreshToken), expiresAt },
     });
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, refreshExpiresAt: expiresAt };
   }
 
   private parseDurationMs(duration: string): number {

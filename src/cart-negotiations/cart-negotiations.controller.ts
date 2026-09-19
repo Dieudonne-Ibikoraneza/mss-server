@@ -9,8 +9,14 @@ import { CartNegotiationsService } from './cart-negotiations.service';
 import { CreateCartNegotiationDto } from './dto/create-cart-negotiation.dto';
 import { CreateCartNegotiationMessageDto } from './dto/create-cart-negotiation-message.dto';
 
+/**
+ * Negotiations are a customer <-> stock team conversation: the data analyst
+ * has no access to any of it (403), listing included. Class-level roles cover
+ * every route; the staff-only list below narrows it further.
+ */
 @ApiTags('cart-negotiations')
 @ApiBearerAuth()
+@Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
 @Controller('cart-negotiations')
 export class CartNegotiationsController {
   constructor(private readonly service: CartNegotiationsService) {}
@@ -41,7 +47,7 @@ export class CartNegotiationsController {
     return this.service.clearMine(user);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER, Role.DATA_ANALYST)
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
   @ApiOperation({ summary: 'List every customer negotiation thread (stock/admin)' })
   @Get()
   findAll(@Query() query: PaginationDto) {

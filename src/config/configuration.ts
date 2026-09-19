@@ -1,3 +1,5 @@
+import { resolveDocsEnabled } from '@/common/swagger';
+
 export default () => ({
   app: {
     env: process.env.NODE_ENV ?? 'development',
@@ -9,11 +11,36 @@ export default () => ({
     /** Where staff/customer-facing links in emails point back to (e.g. "view your quotation"). */
     clientUrl: process.env.CLIENT_URL ?? 'http://localhost:3000',
   },
+  /**
+   * The Swagger UI at `/docs`. Off by default in production; see
+   * `resolveDocsEnabled`. Credentials (HTTP Basic) are required in production.
+   */
+  docs: {
+    enabled: resolveDocsEnabled(process.env.NODE_ENV ?? 'development', process.env.SWAGGER_ENABLED),
+    user: process.env.SWAGGER_USER,
+    password: process.env.SWAGGER_PASSWORD,
+  },
   database: {
     url: process.env.DATABASE_URL,
   },
   redis: {
     url: process.env.REDIS_URL ?? 'redis://localhost:6379',
+  },
+  /**
+   * The refresh-token cookie (see `auth/refresh-cookie.ts`). `Secure` by default
+   * in production; `SameSite=Lax` works when the web app and API share a site
+   * (same registrable domain, e.g. app.example.com + api.example.com, or
+   * localhost on different ports). Only a genuinely cross-site deployment needs
+   * `COOKIE_SAMESITE=none` — which browsers only accept together with `Secure`.
+   */
+  session: {
+    cookieSecure:
+      process.env.COOKIE_SECURE !== undefined && process.env.COOKIE_SECURE !== ''
+        ? process.env.COOKIE_SECURE === 'true'
+        : (process.env.NODE_ENV ?? 'development') === 'production',
+    cookieSameSite: (process.env.COOKIE_SAMESITE ?? 'lax').toLowerCase(),
+    cookieDomain: process.env.COOKIE_DOMAIN || undefined,
+    cookiePath: process.env.COOKIE_PATH || `/${process.env.API_PREFIX ?? 'api'}/v1/auth`,
   },
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET,
@@ -59,18 +86,6 @@ export default () => ({
     sms: {
       apiKey: process.env.SMS_API_KEY,
       senderId: process.env.SMS_SENDER_ID ?? 'MAGNIFICAT',
-    },
-  },
-  payments: {
-    momo: {
-      baseUrl: process.env.MOMO_API_BASE_URL,
-      apiKey: process.env.MOMO_API_KEY,
-      apiUser: process.env.MOMO_API_USER,
-      subscriptionKey: process.env.MOMO_SUBSCRIPTION_KEY,
-    },
-    card: {
-      baseUrl: process.env.CARD_PROVIDER_API_BASE_URL,
-      secretKey: process.env.CARD_PROVIDER_SECRET_KEY,
     },
   },
   ai: {

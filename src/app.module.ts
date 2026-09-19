@@ -19,6 +19,7 @@ import { ProductsModule } from './products/products.module';
 import { CartModule } from './cart/cart.module';
 import { OrdersModule } from './orders/orders.module';
 import { CartNegotiationsModule } from './cart-negotiations/cart-negotiations.module';
+import { NegotiationInboxModule } from './negotiation-inbox/negotiation-inbox.module';
 import { PaymentsModule } from './payments/payments.module';
 import { FavoritesModule } from './favorites/favorites.module';
 import { RoomsModule } from './rooms/rooms.module';
@@ -61,6 +62,7 @@ import { HealthModule } from './health/health.module';
     CartModule,
     OrdersModule,
     CartNegotiationsModule,
+    NegotiationInboxModule,
     PaymentsModule,
     FavoritesModule,
     RoomsModule,

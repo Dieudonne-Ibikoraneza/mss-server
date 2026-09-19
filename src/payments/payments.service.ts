@@ -4,20 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  OrderStatus,
-  PaymentMethod,
-  PaymentStatus,
-  Prisma,
-  QuotationStatus,
-  Role,
-} from '@prisma/client';
+import { OrderStatus, PaymentMethod, PaymentStatus, QuotationStatus, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { MomoProvider } from './providers/momo.provider';
 import { CardProvider } from './providers/card.provider';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
-import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 
 @Injectable()
 export class PaymentsService {
@@ -83,22 +75,6 @@ export class PaymentsService {
         amount: order.total,
         currency: order.currency,
         providerRef: result.providerRef,
-      },
-    });
-  }
-
-  /** Called by the provider's webhook once a MoMo/card payment settles. */
-  async handleWebhook(dto: PaymentWebhookDto) {
-    const payment = await this.prisma.payment.findFirst({
-      where: { providerRef: dto.providerRef },
-    });
-    if (!payment) throw new BadRequestException('Unknown payment reference.');
-
-    return this.prisma.payment.update({
-      where: { id: payment.id },
-      data: {
-        status: dto.status === 'SUCCEEDED' ? PaymentStatus.SUCCEEDED : PaymentStatus.FAILED,
-        rawPayload: dto.raw as Prisma.InputJsonValue,
       },
     });
   }

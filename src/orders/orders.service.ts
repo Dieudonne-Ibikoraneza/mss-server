@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -360,11 +361,17 @@ export class OrdersService {
 
   /**
    * The other half of stock reservations (doc-driven feature, no doc section
-   * number yet): a PENDING order that's still sitting on an expired hold gets
+   * number yet): a PENDING order whose payment window has lapsed gets
    * auto-cancelled and its stock released, one order per transaction so a
    * single bad row can't block the rest of the sweep. Runs every minute —
    * cheap (an indexed `reservationExpiresAt` lookup) and keeps the customer's
    * wait after the window lapses short.
+   *
+   * The payment window only runs while the customer can actually act on it,
+   * so only `QUOTATION_SENT` orders are swept: `AWAITING_REVIEW` means staff
+   * haven't quoted yet (the clock restarts in `sendQuotation`), and
+   * `PAYMENT_SUBMITTED` / `PAYMENT_VERIFIED` mean the customer already paid —
+   * cancelling then would strand a real payment.
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async releaseExpiredReservations(): Promise<void> {
@@ -375,29 +382,43 @@ export class OrdersService {
     this.releasingReservations = true;
     try {
       const expired = await this.prisma.order.findMany({
-        where: { status: OrderStatus.PENDING, reservationExpiresAt: { lte: new Date() } },
+        where: {
+          status: OrderStatus.PENDING,
+          quotationStatus: QuotationStatus.QUOTATION_SENT,
+          reservationExpiresAt: { lte: new Date() },
+        },
         include: { items: { include: { product: true } }, customer: true },
       });
       if (expired.length === 0) return;
 
       for (const order of expired) {
         try {
-          await this.prisma.$transaction(async (tx) => {
+          const cancelled = await this.prisma.$transaction(async (tx) => {
+            // Claim the order with the same conditions the sweep selected it
+            // on — the customer may have submitted payment (or staff advanced
+            // the order) since the list above was read, and that must win.
+            const claimed = await tx.order.updateMany({
+              where: {
+                id: order.id,
+                status: OrderStatus.PENDING,
+                quotationStatus: QuotationStatus.QUOTATION_SENT,
+                reservationExpiresAt: { lte: new Date() },
+              },
+              data: { status: OrderStatus.CANCELLED, reservationExpiresAt: null },
+            });
+            if (claimed.count === 0) return false;
+
             await this.releaseReservedStock(tx, order.items);
-            await tx.order.update({
-              where: { id: order.id },
+            await tx.orderStatusEvent.create({
               data: {
+                orderId: order.id,
                 status: OrderStatus.CANCELLED,
-                reservationExpiresAt: null,
-                statusEvents: {
-                  create: {
-                    status: OrderStatus.CANCELLED,
-                    note: 'Automatically cancelled — the payment window expired before this order advanced, so its stock hold was released.',
-                  },
-                },
+                note: 'Automatically cancelled — the payment window expired before this order advanced, so its stock hold was released.',
               },
             });
+            return true;
           });
+          if (!cancelled) continue;
 
           await invalidateProductsCache(
             this.redis,
@@ -491,8 +512,8 @@ export class OrdersService {
                 create: {
                   status: OrderStatus.PENDING,
                   note:
-                    'Enough stock is now available — promoted off the waitlist. ' +
-                    `You have ${reservationMinutes} minutes to complete payment.`,
+                    'Enough stock is now available — promoted off the waitlist and held for you. ' +
+                    `Once the quotation is sent you will have ${reservationMinutes} minutes to complete payment.`,
                 },
               },
             },
@@ -750,8 +771,8 @@ export class OrdersService {
                 author: OrderMessageAuthor.SYSTEM,
                 body: isWaitlisted
                   ? "This order is waitlisted: part of it exceeds what's currently on hand. " +
-                    "We'll email you the moment there's enough stock, and you'll have " +
-                    `${Math.round(this.reservationWindowMs() / 60_000)} minutes from then to complete payment.`
+                    "We'll email you the moment there's enough stock and hold it for you. You'll then have " +
+                    `${Math.round(this.reservationWindowMs() / 60_000)} minutes to complete payment once your quotation is sent.`
                   : 'Part of this order exceeds what is currently on hand. ' +
                     'Our stock team will confirm what can be released now and when the rest can follow.',
                 metadata: { shortages } as unknown as Prisma.InputJsonValue,
@@ -1168,16 +1189,44 @@ export class OrdersService {
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw new BadRequestException('This quotation has already been paid and verified.');
     }
+    if (order.quotationStatus === QuotationStatus.PAYMENT_SUBMITTED) {
+      throw new BadRequestException(
+        'The customer has already submitted payment for this quotation — verify it instead of re-sending.',
+      );
+    }
 
-    const updated = await this.prisma.order.update({
-      where: { id },
+    const now = new Date();
+    // The customer's payment window starts now, not when the order was placed
+    // or promoted off the waitlist — they can't pay before this point. Only an
+    // order that actually holds stock (a waitlisted one has no expiry) gets one.
+    const holdsStock = order.status === OrderStatus.PENDING && order.reservationExpiresAt !== null;
+
+    // Guarded on the same state read above: a payment submitted or a
+    // cancellation landing in between must not be overwritten.
+    const { count } = await this.prisma.order.updateMany({
+      where: {
+        id,
+        status: { not: OrderStatus.CANCELLED },
+        quotationStatus: { in: [QuotationStatus.AWAITING_REVIEW, QuotationStatus.QUOTATION_SENT] },
+      },
       data: {
         quotationStatus: QuotationStatus.QUOTATION_SENT,
         transportFee: dto.transportFee,
         transportFeeNote: dto.transportFeeNote,
-        quotationSentAt: new Date(),
+        quotationSentAt: now,
         total: Number(order.subtotal) + dto.transportFee,
+        reservationExpiresAt: holdsStock
+          ? new Date(now.getTime() + this.reservationWindowMs())
+          : undefined,
       },
+    });
+    if (count === 0) {
+      throw new ConflictException(
+        'This order changed while the quotation was being sent. Refresh and try again.',
+      );
+    }
+    const updated = await this.prisma.order.findUniqueOrThrow({
+      where: { id },
       include: { delivery: true },
     });
 
@@ -1252,6 +1301,7 @@ export class OrdersService {
   /** The customer telling us they have paid — verification is a separate, staff-side step. */
   async markPaymentSubmitted(id: string, actingUser: AuthenticatedUser) {
     const order = await this.assertAccess(id, actingUser);
+    this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
       throw new BadRequestException(
         'Payment can only be submitted once a quotation has been sent for this order.',
@@ -1263,13 +1313,26 @@ export class OrdersService {
       );
     }
 
-    return this.prisma.order.update({
-      where: { id },
+    // Guarded so it can't land on an order the expiry sweep cancelled (or
+    // staff re-quoted) after the read above. A submitted payment is exempt
+    // from the sweep from here on, even if the window has already lapsed.
+    const { count } = await this.prisma.order.updateMany({
+      where: {
+        id,
+        status: { not: OrderStatus.CANCELLED },
+        quotationStatus: QuotationStatus.QUOTATION_SENT,
+      },
       data: {
         quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
         paymentSubmittedAt: new Date(),
       },
     });
+    if (count === 0) {
+      throw new ConflictException(
+        'This order changed before your payment could be recorded. Refresh and check its status.',
+      );
+    }
+    return this.prisma.order.findUniqueOrThrow({ where: { id } });
   }
 
   async verifyPayment(id: string, actingUser: AuthenticatedUser) {
@@ -1370,7 +1433,20 @@ export class OrdersService {
 
   // --- Negotiation thread ----------------------------------------------------
 
+  /**
+   * Order negotiation threads are a customer <-> stock team conversation; the
+   * data analyst can read orders (`isStaff`) but not what was said on them.
+   * Enforced on the routes too (`@Roles`) — this keeps the service safe for
+   * any other caller.
+   */
+  private assertCanUseNegotiation(actingUser: AuthenticatedUser) {
+    if (actingUser.role === Role.DATA_ANALYST) {
+      throw new ForbiddenException('Negotiations are not available for your role.');
+    }
+  }
+
   async listMessages(id: string, actingUser: AuthenticatedUser) {
+    this.assertCanUseNegotiation(actingUser);
     await this.assertAccess(id, actingUser);
     const messages = await this.prisma.orderMessage.findMany({
       where: { orderId: id },
@@ -1396,6 +1472,7 @@ export class OrdersService {
   }
 
   async postMessage(id: string, dto: CreateOrderMessageDto, actingUser: AuthenticatedUser) {
+    this.assertCanUseNegotiation(actingUser);
     await this.assertAccess(id, actingUser);
     const author = STAFF_ROLES.includes(actingUser.role)
       ? OrderMessageAuthor.STAFF

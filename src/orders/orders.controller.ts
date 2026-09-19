@@ -122,17 +122,20 @@ export class OrdersController {
     return this.ordersService.verifyPayment(id, user);
   }
 
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
   @ApiOperation({
     summary: 'Read the negotiation thread on an order',
     description:
-      'Opened automatically with a SYSTEM message when an order exceeds the stock on hand.',
+      'Opened automatically with a SYSTEM message when an order exceeds the stock on hand. ' +
+      'Not available to the data analyst (403).',
   })
   @Get(':id/messages')
   listMessages(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.listMessages(id, user);
   }
 
-  @ApiOperation({ summary: 'Post a message to an order negotiation thread' })
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
+  @ApiOperation({ summary: 'Post a message to an order negotiation thread (not the data analyst)' })
   @Post(':id/messages')
   postMessage(
     @Param('id') id: string,

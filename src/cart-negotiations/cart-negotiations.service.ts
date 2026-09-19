@@ -40,8 +40,9 @@ export class CartNegotiationsService {
     private readonly negotiations: NegotiationsGateway,
   ) {}
 
+  /** The data analyst is deliberately not staff here — negotiations are off-limits to that role. */
   private isStaff(role: Role) {
-    return STAFF_ROLES.includes(role) || role === Role.DATA_ANALYST;
+    return STAFF_ROLES.includes(role);
   }
 
   /**

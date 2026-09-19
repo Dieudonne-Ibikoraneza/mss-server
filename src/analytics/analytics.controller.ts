@@ -2,6 +2,8 @@ import { Controller, Get, Param, ParseEnumPipe, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JourneyStage, Role } from '@prisma/client';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { CurrentUser } from '@/common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { AnalyticsService } from './analytics.service';
 import { QueryAnalyticsDto } from './dto/query-analytics.dto';
 import { QueryTilesDto } from './dto/query-tiles.dto';
@@ -97,7 +99,8 @@ export class AnalyticsController {
   journeyStageDetail(
     @Param('stage', new ParseEnumPipe(JourneyStage)) stage: JourneyStage,
     @Query() query: QueryAnalyticsDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.analyticsService.journeyStageDetail(stage, query.period);
+    return this.analyticsService.journeyStageDetail(stage, query.period, user.role);
   }
 }

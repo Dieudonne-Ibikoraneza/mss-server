@@ -1,11 +1,11 @@
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { setupSwagger } from './common/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -32,16 +32,11 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new TransformInterceptor());
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Magnificat Smart Space API')
-    .setDescription(
-      'E-commerce, 3D room visualizer and AI chatbot backend for Magnificat Smart Space.',
-    )
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('docs', app, document);
+  setupSwagger(app, {
+    enabled: config.get<boolean>('docs.enabled') ?? false,
+    user: config.get<string>('docs.user'),
+    password: config.get<string>('docs.password'),
+  });
 
   const port = config.get<number>('app.port') ?? 4000;
   await app.listen(port);

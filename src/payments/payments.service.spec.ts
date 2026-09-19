@@ -31,7 +31,7 @@ describe('PaymentsService — payment-ready order status validation', () => {
     momo = { initiate: jest.fn().mockResolvedValue({ providerRef: 'ref-1', status: 'PENDING' }) };
     card = { initiate: jest.fn().mockResolvedValue({ providerRef: 'ref-2', status: 'PENDING' }) };
 
-    service = new PaymentsService(prisma as any, momo as any, card as any);
+    service = new PaymentsService(prisma as never, momo, card);
   });
 
   it('initiates a payment for an order whose quotation has been sent', async () => {

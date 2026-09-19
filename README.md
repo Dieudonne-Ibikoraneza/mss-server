@@ -19,7 +19,7 @@ rate limiting, OTP codes, and session/refresh-token bookkeeping.
 - **Nodemailer** for transactional email (OTP codes, staff welcome emails),
   copy pulled from the DB-backed `EmailTemplate` table (see
   [Email](#email) below)
-- **Swagger** docs at `/docs` once running
+- **Swagger** docs at `/docs` once running (development only by default — in production they are off unless `SWAGGER_ENABLED=true`, and then require `SWAGGER_USER`/`SWAGGER_PASSWORD`)
 
 ## Getting started
 

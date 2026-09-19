@@ -1,28 +1,23 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import { Injectable, NotImplementedException } from '@nestjs/common';
 import type {
   InitiatePaymentInput,
   InitiatePaymentResult,
   PaymentProvider,
 } from './payment-provider.interface';
 
-/** Visa/Mastercard integration point (e.g. Flutterwave, Stripe, DPO). */
+/**
+ * Visa/Mastercard integration point (e.g. Flutterwave, Stripe, DPO). No
+ * integration exists yet, so this refuses instead of simulating a charge —
+ * see `MomoProvider` for why. Customers pay with the bank details on the
+ * quotation instead.
+ */
 @Injectable()
 export class CardProvider implements PaymentProvider {
-  private readonly logger = new Logger(CardProvider.name);
-  private readonly configured: boolean;
-
-  constructor(config: ConfigService) {
-    this.configured = Boolean(config.get<string>('payments.card.baseUrl'));
-  }
-
   initiate(_input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
-    if (!this.configured) {
-      this.logger.warn('Card provider not configured; simulating a pending charge.');
-    }
-    // TODO: call the real card processor's charge/checkout API here once
-    // CARD_PROVIDER_API_BASE_URL / CARD_PROVIDER_SECRET_KEY are set.
-    return Promise.resolve({ providerRef: `card_${randomUUID()}`, status: 'PENDING' });
+    return Promise.reject(
+      new NotImplementedException(
+        'Online card payment is not available yet. Pay using the bank details on your quotation, then confirm the payment on the order.',
+      ),
+    );
   }
 }

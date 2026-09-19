@@ -55,7 +55,13 @@ describe('AuthService — account status enforcement', () => {
       verify: jest.fn().mockResolvedValue(true),
     };
 
-    service = new AuthService(prisma as any, redis as any, jwt as any, config as any, otp as any);
+    service = new AuthService(
+      prisma as never,
+      redis as never,
+      jwt as never,
+      config as never,
+      otp as never,
+    );
   });
 
   describe('login', () => {
@@ -131,8 +137,28 @@ describe('AuthService — account status enforcement', () => {
       expect(result).toEqual({
         accessToken: 'signed-access-token',
         refreshToken: expect.any(String),
+        refreshExpiresAt: expect.any(Date),
       });
       expect(prisma.refreshToken.create).toHaveBeenCalled();
+    });
+
+    it('reports a refresh-token expiry equal to the configured lifetime (the cookie lives exactly that long)', async () => {
+      prisma.user.findUnique.mockResolvedValue(baseUser);
+      prisma.user.update.mockResolvedValue(baseUser);
+      prisma.refreshToken.create.mockResolvedValue({});
+
+      const { refreshExpiresAt } = await service.verifyOtp({
+        email: baseUser.email,
+        otp: '123456',
+      });
+
+      const thirtyDays = 30 * 86_400_000;
+      expect(refreshExpiresAt.getTime() - Date.now()).toBeGreaterThan(thirtyDays - 5_000);
+      expect(refreshExpiresAt.getTime() - Date.now()).toBeLessThanOrEqual(thirtyDays);
+      const stored = (
+        prisma.refreshToken.create.mock.calls as [{ data: { expiresAt: Date } }][]
+      )[0][0].data.expiresAt;
+      expect(stored.getTime()).toBe(refreshExpiresAt.getTime());
     });
 
     it.each([UserStatus.INACTIVE, UserStatus.SUSPENDED])(
@@ -169,6 +195,7 @@ describe('AuthService — account status enforcement', () => {
       expect(result).toEqual({
         accessToken: 'signed-access-token',
         refreshToken: expect.any(String),
+        refreshExpiresAt: expect.any(Date),
       });
       expect(prisma.refreshToken.update).toHaveBeenCalledWith({
         where: { id: storedToken.id },

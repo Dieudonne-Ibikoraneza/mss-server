@@ -12,6 +12,8 @@ import { TranslationService } from '@/translation/translation.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
+import { ListSharedDesignsDto } from './dto/list-shared-designs.dto';
+import { decodeCursor, encodeCursor } from '@/common/utils/cursor';
 
 /** Every design read carries its tiles, each tile's product (+ collection), the room, and the owner. */
 const DESIGN_INCLUDE = {
@@ -188,13 +190,47 @@ export class RoomsService {
     return this.withSerializedTiles(design);
   }
 
-  /** Designs a client has explicitly shared, for the sales team to review. */
-  async findSharedDesigns() {
-    const designs = await this.prisma.roomDesign.findMany({
-      where: { sharedWithSales: true },
+  /**
+   * Designs a client has explicitly shared, for staff to review — newest
+   * first, one page at a time (`limit` + a keyset `cursor`), optionally
+   * narrowed by `search`. Only the returned page's tiles get their product
+   * images signed, so cost tracks the page size, not the number of shares.
+   */
+  async findSharedDesigns(query: ListSharedDesignsDto = {}) {
+    const limit = query.limit ?? 12;
+    const search = query.search?.trim();
+
+    const filters: Prisma.RoomDesignWhereInput[] = [{ sharedWithSales: true }];
+    if (search) {
+      const contains = { contains: search, mode: 'insensitive' } as const;
+      filters.push({
+        OR: [
+          { name: contains },
+          { room: { name: contains } },
+          { room: { nameRw: contains } },
+          { user: { fullName: contains } },
+          { user: { email: contains } },
+        ],
+      });
+    }
+    if (query.cursor) {
+      const { at, id } = decodeCursor(query.cursor);
+      filters.push({ OR: [{ createdAt: { lt: at } }, { createdAt: at, id: { lt: id } }] });
+    }
+
+    const rows = await this.prisma.roomDesign.findMany({
+      where: { AND: filters },
       include: DESIGN_INCLUDE,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
     });
-    return Promise.all(designs.map((design) => this.withSerializedTiles(design)));
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+    return {
+      items: await Promise.all(page.map((design) => this.withSerializedTiles(design))),
+      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
+    };
   }
 }

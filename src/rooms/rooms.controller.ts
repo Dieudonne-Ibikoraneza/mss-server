@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { Public } from '@/common/decorators/public.decorator';
@@ -9,6 +9,7 @@ import { RoomsService } from './rooms.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
+import { ListSharedDesignsDto } from './dto/list-shared-designs.dto';
 
 const STAFF_ROLES: Role[] = [Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER];
 
@@ -75,10 +76,15 @@ export class RoomsController {
 
   @Roles(...STAFF_ROLES)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'List designs shared with staff (admin/sales/stock)' })
+  @ApiOperation({
+    summary: 'List designs shared with staff (admin/sales/stock)',
+    description:
+      'Newest first, cursor-paginated: pass `nextCursor` back as `cursor` for the next page. ' +
+      '`search` matches the design name, the room name, or the customer name/email.',
+  })
   @Get('designs/shared')
-  findSharedDesigns() {
-    return this.roomsService.findSharedDesigns();
+  findSharedDesigns(@Query() query: ListSharedDesignsDto) {
+    return this.roomsService.findSharedDesigns(query);
   }
 
   @ApiBearerAuth()

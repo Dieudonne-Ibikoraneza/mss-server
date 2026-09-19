@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { OrderStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
+import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { AnalyticsPeriod, bucketize, resolvePeriod } from '@/common/utils/analytics-period';
 import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
@@ -16,7 +17,10 @@ import { QueryMovementsDto } from './dto/query-movements.dto';
  */
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   async stockSummary(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
@@ -109,20 +113,27 @@ export class ReportsService {
       getLowStockThreshold(this.prisma),
     ]);
 
-    return products
+    const worst = products
       .map((row) => ({ ...row, quantityOnHandSqm: Number(row.quantityOnHandSqm) }))
       .filter((row) => row.quantityOnHandSqm <= lowStockThreshold)
       .sort((a, b) => a.quantityOnHandSqm - b.quantityOnHandSqm)
-      .slice(0, limit)
-      .map((row) => ({
+      .slice(0, limit);
+
+    // A product's stored `image` is a bare private-bucket path for anything
+    // uploaded through the app — resolve it (only for the rows actually
+    // returned) to a URL a client can load, like every other endpoint that
+    // echoes one does, instead of forwarding the raw value.
+    return Promise.all(
+      worst.map(async (row) => ({
         productId: row.id,
         name: row.name,
         sku: row.sku,
-        image: row.image,
+        image: await this.storage.resolveImageUrl(row.image),
         quantityOnHandSqm: row.quantityOnHandSqm,
         lowStockThreshold,
         stockStatus: stockStatusOf(row.quantityOnHandSqm, lowStockThreshold),
-      }));
+      })),
+    );
   }
 
   /** Orders the warehouse still has to act on, for the stock overview's fulfilment queue. */

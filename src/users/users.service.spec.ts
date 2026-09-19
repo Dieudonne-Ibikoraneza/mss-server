@@ -22,7 +22,7 @@ describe('UsersService — setStaffStatus revokes sessions on deactivation', () 
       $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
     };
     notifications = {};
-    service = new UsersService(prisma as any, notifications as any);
+    service = new UsersService(prisma as never, notifications as never);
   });
 
   it('revokes all active refresh tokens when deactivating a staff member', async () => {

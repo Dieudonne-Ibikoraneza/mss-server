@@ -5,6 +5,7 @@ import {
   OrderCreatorType,
   OrderStatus,
   Prisma,
+  Role,
   RoomType,
   TileEventType,
   type Product,
@@ -645,7 +646,11 @@ export class AnalyticsService {
    * for the same stage — that's two different, both-correct questions
    * ("how many got at least this far" vs. "how many events exist here").
    */
-  async journeyStageDetail(stage: JourneyStage, period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
+  async journeyStageDetail(
+    stage: JourneyStage,
+    period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY,
+    viewerRole?: Role,
+  ) {
     const resolved = resolvePeriod(period);
 
     const events = await this.prisma.customerJourneyEvent.findMany({
@@ -686,7 +691,13 @@ export class AnalyticsService {
     const userIds = [
       ...new Set(distinctEvents.map((event) => event.userId).filter((id): id is string => !!id)),
     ];
-    const actions = await this.journeyStageActions(stage, userIds, resolved, distinctEvents);
+    const actions = await this.journeyStageActions(
+      stage,
+      userIds,
+      resolved,
+      distinctEvents,
+      viewerRole,
+    );
     const signedInCustomers = new Set(
       distinctEvents.filter((event) => event.userId).map((event) => event.userId),
     ).size;
@@ -858,6 +869,7 @@ export class AnalyticsService {
       createdAt: Date;
       metadata: Prisma.JsonValue;
     }[],
+    viewerRole?: Role,
   ) {
     const inRange = { gte: resolved.from, lt: resolved.to };
 
@@ -944,7 +956,10 @@ export class AnalyticsService {
             detail: {
               orderNumber: order.orderNumber,
               orderId: order.id,
-              lastMessage: order.messages[0]?.body ?? null,
+              // What was said on a negotiation thread is off-limits to the data
+              // analyst (403 on the thread endpoints) — that must hold here too.
+              lastMessage:
+                viewerRole === Role.DATA_ANALYST ? null : (order.messages[0]?.body ?? null),
             },
           })),
         ];
