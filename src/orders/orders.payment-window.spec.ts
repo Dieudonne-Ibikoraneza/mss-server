@@ -111,6 +111,19 @@ describe('OrdersService — the payment window runs from the quotation, and neve
       expect(data.reservationExpiresAt?.getTime()).toBeGreaterThanOrEqual(before + 60 * 60_000);
     });
 
+    it('clears the "viewed" flag so a re-sent quotation has to be opened again', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingHeld,
+        quotationStatus: QuotationStatus.QUOTATION_SENT,
+      });
+      await service.sendQuotation('order-1', { transportFee: 9 }, staff);
+      expect(prisma.order.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ quotationViewedAt: null }),
+        }),
+      );
+    });
+
     it('leaves a hold-less (waitlisted) order without an expiry', async () => {
       prisma.order.findUnique.mockResolvedValue({
         ...pendingHeld,
@@ -162,6 +175,20 @@ describe('OrdersService — the payment window runs from the quotation, and neve
           where: expect.objectContaining({
             quotationStatus: QuotationStatus.QUOTATION_SENT,
             status: { not: OrderStatus.CANCELLED },
+          }),
+        }),
+      );
+    });
+
+    it('only accepts payment for the exact quotation version the customer viewed', async () => {
+      const sentAt = new Date('2026-09-19T10:00:00Z');
+      prisma.order.findUnique.mockResolvedValue({ ...sent, quotationSentAt: sentAt });
+      await service.markPaymentSubmitted('order-1', customer);
+      expect(prisma.order.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            quotationSentAt: sentAt,
+            quotationViewedAt: { not: null },
           }),
         }),
       );

@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { OrdersService } from './orders.service';
@@ -85,6 +86,20 @@ describe('OrdersService#updateItems — availability for a revised order', () =>
     expect(tx.$executeRaw).not.toHaveBeenCalled();
     // Promotion — oldest first — is what decides who gets the free stock.
     expect(promote).toHaveBeenCalledWith(['p1']);
+  });
+
+  it('refuses to revise an order whose payment was already submitted', async () => {
+    prisma.order.findUnique.mockResolvedValue(
+      orderWith({
+        status: OrderStatus.PENDING,
+        quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
+        reservationExpiresAt: new Date(Date.now() + 60_000),
+      }),
+    );
+    await expect(
+      service.updateItems('o1', { items: [{ productId: 'p1', areaSqm: 4 }] }, admin),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('still hands back the hold of a pending order that really holds stock', async () => {

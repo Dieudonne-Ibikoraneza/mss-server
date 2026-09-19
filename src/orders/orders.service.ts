@@ -1036,6 +1036,13 @@ export class OrdersService {
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw new BadRequestException('This order has already been paid and verified.');
     }
+    // Once the customer says they've paid, what they paid for is frozen: a
+    // revision would change the amount and reset the payment behind their back.
+    if (order.quotationStatus === QuotationStatus.PAYMENT_SUBMITTED) {
+      throw new BadRequestException(
+        'The customer has already submitted payment for this order — verify it, or cancel the order, instead of editing it.',
+      );
+    }
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: dto.items.map((item) => item.productId) } },
@@ -1134,7 +1141,12 @@ export class OrdersService {
         // would otherwise release the old holds a second time. Any other write
         // to the order in between (`updatedAt` moves) makes this retry-able.
         const claimed = await tx.order.updateMany({
-          where: { id, status: order.status, updatedAt: order.updatedAt },
+          where: {
+            id,
+            status: order.status,
+            quotationStatus: order.quotationStatus,
+            updatedAt: order.updatedAt,
+          },
           data: { status: order.status },
         });
         if (claimed.count === 0) {
@@ -1297,6 +1309,9 @@ export class OrdersService {
         transportFee: dto.transportFee,
         transportFeeNote: dto.transportFeeNote,
         quotationSentAt: now,
+        // A re-sent quotation may differ from the one already viewed — the
+        // customer has to open this version before they can mark it paid.
+        quotationViewedAt: null,
         total: Number(order.subtotal) + dto.transportFee,
         reservationExpiresAt: holdsStock
           ? new Date(now.getTime() + this.reservationWindowMs())
@@ -1352,7 +1367,12 @@ export class OrdersService {
     // A staff preview doesn't count — only the customer's own view unlocks
     // "mark as paid", so it can't be satisfied on their behalf.
     if (!order.quotationViewedAt && actingUser.id === order.customerId) {
-      await this.prisma.order.update({ where: { id }, data: { quotationViewedAt: new Date() } });
+      // Pinned to the version just rendered: if staff re-send meanwhile, this
+      // view must not count for the new quotation.
+      await this.prisma.order.updateMany({
+        where: { id, quotationViewedAt: null, quotationSentAt: full.quotationSentAt },
+        data: { quotationViewedAt: new Date() },
+      });
     }
 
     return renderQuotationPdf({
@@ -1404,6 +1424,9 @@ export class OrdersService {
         id,
         status: { not: OrderStatus.CANCELLED },
         quotationStatus: QuotationStatus.QUOTATION_SENT,
+        // The version the customer viewed is the version they're paying.
+        quotationSentAt: order.quotationSentAt,
+        quotationViewedAt: { not: null },
       },
       data: {
         quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
