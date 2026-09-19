@@ -520,6 +520,10 @@ model CartNegotiation {
   customer   User     @relation(fields: [customerId], references: [id])
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+  /// Set when the customer uses "Clear chat". Nothing is deleted — the stock
+  /// team keeps the whole conversation as its permanent record — the customer
+  /// simply stops seeing anything created up to this moment.
+  customerClearedAt DateTime?
 
   items    CartNegotiationItem[]
   messages CartNegotiationMessage[]

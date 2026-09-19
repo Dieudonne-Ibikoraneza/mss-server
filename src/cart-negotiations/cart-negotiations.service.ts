@@ -28,6 +28,26 @@ const stripStockFigureFromBody = (body: string) =>
   body.replace(/Only [\d.,]+\s*m² on hand right now\.,?\s*/gi, '');
 
 /**
+ * One chip per product, the latest. Snapshots used to be appended on every
+ * submit, so older threads hold several rows for the same product — this
+ * collapses them on the way out (`submit` now replaces them on the way in).
+ */
+const latestItemPerProduct = <T extends { productId: string; createdAt: Date }>(
+  items: T[],
+): T[] => {
+  const latest = new Map<string, T>();
+  for (const item of items) {
+    const seen = latest.get(item.productId);
+    if (!seen || item.createdAt >= seen.createdAt) latest.set(item.productId, item);
+  }
+  return items.filter((item) => latest.get(item.productId) === item);
+};
+
+/** The staff-visible note left in a thread when its customer clears their view — never shown to the customer. */
+const CLEARED_NOTE =
+  'The customer cleared their chat view. The earlier conversation is kept here as a record.';
+
+/**
  * Pre-order negotiation threads: a cart the customer couldn't check out
  * because it exceeded stock on hand, negotiated with the stock team before
  * any order exists. See `CartNegotiation` in schema.prisma for why this is
@@ -55,18 +75,25 @@ export class CartNegotiationsService {
    */
   private presentFor<
     T extends {
-      items: { availabilityNote: string }[];
-      messages: { body: string }[];
+      customerClearedAt: Date | null;
+      items: { productId: string; availabilityNote: string; createdAt: Date }[];
+      messages: { body: string; createdAt: Date }[];
     },
   >(negotiation: T, actingUser: AuthenticatedUser): T {
-    if (this.isStaff(actingUser.role)) return negotiation;
+    if (this.isStaff(actingUser.role)) {
+      return { ...negotiation, items: latestItemPerProduct(negotiation.items) };
+    }
+    // "Clear chat" hides everything up to that moment from the customer only.
+    const clearedAt = negotiation.customerClearedAt;
+    const visible = <R extends { createdAt: Date }>(rows: R[]) =>
+      clearedAt ? rows.filter((row) => row.createdAt > clearedAt) : rows;
     return {
       ...negotiation,
-      items: negotiation.items.map((item) => ({
+      items: latestItemPerProduct(visible(negotiation.items)).map((item) => ({
         ...item,
         availabilityNote: 'Exceeds what we currently have in stock',
       })),
-      messages: negotiation.messages.map((message) => ({
+      messages: visible(negotiation.messages).map((message) => ({
         ...message,
         body: stripStockFigureFromBody(message.body),
       })),
@@ -104,9 +131,18 @@ export class CartNegotiationsService {
       .map((item) => `${item.productName} (requested ${item.requestedAreaSqm} sqm)`)
       .join('; ');
 
+    // Later submissions replace what earlier ones said about the same product
+    // (and, for a whole-cart snapshot, drop products that left the cart), so
+    // staff see the current state of the cart — not every snapshot ever sent.
+    const items = [...new Map(dto.items.map((item) => [item.productId, item])).values()];
     await this.prisma.$transaction([
+      this.prisma.cartNegotiationItem.deleteMany({
+        where: dto.snapshot
+          ? { negotiationId }
+          : { negotiationId, productId: { in: items.map((item) => item.productId) } },
+      }),
       this.prisma.cartNegotiationItem.createMany({
-        data: dto.items.map((item) => ({
+        data: items.map((item) => ({
           negotiationId,
           productId: item.productId,
           productName: item.productName,
@@ -154,15 +190,17 @@ export class CartNegotiationsService {
       orderBy: { createdAt: 'desc' },
       include: DETAIL_INCLUDE,
     });
-    return negotiation ? this.presentFor(negotiation, actingUser) : null;
+    if (!negotiation) return null;
+    const presented = this.presentFor(negotiation, actingUser);
+    // Cleared and nothing said since: to the customer it is a fresh start.
+    return negotiation.customerClearedAt && presented.messages.length === 0 ? null : presented;
   }
 
   /**
-   * The customer clearing their own thread — a fresh start once whatever it
-   * was about is settled, rather than carrying old back-and-forth forever.
-   * Cascades to its items/messages (see schema.prisma). Staff have no
-   * equivalent: their inbox is the permanent record, this is only ever the
-   * customer tidying their own side.
+   * The customer clearing their own view of the thread — a fresh start once
+   * whatever it was about is settled. Nothing is deleted: the stock team's
+   * inbox is the permanent record (see `CartNegotiation`), so this only moves
+   * the point the customer's own view starts from, and leaves a note for staff.
    */
   async clearMine(actingUser: AuthenticatedUser) {
     const existing = await this.prisma.cartNegotiation.findFirst({
@@ -170,7 +208,23 @@ export class CartNegotiationsService {
       orderBy: { createdAt: 'desc' },
     });
     if (!existing) return { cleared: false };
-    await this.prisma.cartNegotiation.delete({ where: { id: existing.id } });
+    // One instant for both: the note is created AT the cut-off, and the
+    // customer's view only shows what is strictly after it.
+    const clearedAt = new Date();
+    await this.prisma.$transaction([
+      this.prisma.cartNegotiation.update({
+        where: { id: existing.id },
+        data: { customerClearedAt: clearedAt },
+      }),
+      this.prisma.cartNegotiationMessage.create({
+        data: {
+          negotiationId: existing.id,
+          author: OrderMessageAuthor.SYSTEM,
+          body: CLEARED_NOTE,
+          createdAt: clearedAt,
+        },
+      }),
+    ]);
     return { cleared: true };
   }
 
@@ -194,7 +248,15 @@ export class CartNegotiationsService {
       }),
       this.prisma.cartNegotiation.count(),
     ]);
-    return paginate(items, total, query.page, query.limit);
+    return paginate(
+      items.map((negotiation) => ({
+        ...negotiation,
+        items: latestItemPerProduct(negotiation.items),
+      })),
+      total,
+      query.page,
+      query.limit,
+    );
   }
 
   async postMessage(

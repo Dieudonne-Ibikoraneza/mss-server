@@ -2,8 +2,10 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsPositive,
   IsString,
   MaxLength,
@@ -48,4 +50,14 @@ export class CreateCartNegotiationDto {
   @IsNotEmpty()
   @MaxLength(2000)
   body: string;
+
+  /**
+   * `true` when `items` is the customer's whole cart right now ("share my
+   * cart"): products no longer in it are dropped from the thread's item list
+   * instead of lingering as stale chips. Left out for a shortage message,
+   * which only names the newly short lines and so only refreshes those.
+   */
+  @IsOptional()
+  @IsBoolean()
+  snapshot?: boolean;
 }

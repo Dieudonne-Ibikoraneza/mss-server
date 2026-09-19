@@ -38,9 +38,9 @@ export class CartNegotiationsController {
   }
 
   @ApiOperation({
-    summary: "Clear the calling customer's own negotiation thread",
+    summary: "Clear the calling customer's own view of their negotiation thread",
     description:
-      'Deletes it entirely, including its items and messages — a fresh start, not an archive.',
+      'A fresh start for the customer: they stop seeing the earlier conversation. Nothing is deleted — the stock team keeps the full thread as its record.',
   })
   @Delete('mine')
   clearMine(@CurrentUser() user: AuthenticatedUser) {
