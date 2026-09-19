@@ -1247,10 +1247,29 @@ export class OrdersService {
       );
     }
 
-    return this.prisma.orderDelivery.upsert({
-      where: { orderId: id },
-      create: { orderId: id, ...dto },
-      update: dto,
+    return this.prisma.$transaction(async (tx) => {
+      // Holds the order row for the duration, and only matches while no
+      // quotation has gone out: a quotation sent between the read above and
+      // this write would otherwise be costed against an address that then
+      // changes underneath it.
+      const open = await tx.order.updateMany({
+        where: {
+          id,
+          quotationStatus: QuotationStatus.AWAITING_REVIEW,
+          status: { not: OrderStatus.CANCELLED },
+        },
+        data: { updatedAt: new Date() },
+      });
+      if (open.count === 0) {
+        throw new ConflictException(
+          'A quotation was sent for this order in the meantime, so its delivery details are now locked.',
+        );
+      }
+      return tx.orderDelivery.upsert({
+        where: { orderId: id },
+        create: { orderId: id, ...dto },
+        update: dto,
+      });
     });
   }
 
@@ -1277,12 +1296,34 @@ export class OrdersService {
     this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { customer: true },
+      include: { customer: true, delivery: true },
     });
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw new BadRequestException('This quotation has already been paid and verified.');
+    }
+
+    // A quotation is payable, and it locks the delivery details — so it can
+    // only go out once the order is deliverable and its stock is actually held.
+    if (order.status === OrderStatus.WAITLISTED) {
+      throw new BadRequestException(
+        'This order is waitlisted and holds no stock yet. Send the quotation once it has been promoted.',
+      );
+    }
+    if (order.status !== OrderStatus.PENDING || order.reservationExpiresAt === null) {
+      throw new BadRequestException('Stock is not held for this order, so it cannot be quoted.');
+    }
+    const delivery = order.delivery;
+    if (
+      !delivery ||
+      ![delivery.contactName, delivery.phone, delivery.address, delivery.city].every(
+        (field) => field.trim() !== '',
+      )
+    ) {
+      throw new BadRequestException(
+        'Delivery details (contact, phone, address and city) are required before the quotation can be sent. Add them first — they lock once it is sent.',
+      );
     }
     if (order.quotationStatus === QuotationStatus.PAYMENT_SUBMITTED) {
       throw new BadRequestException(

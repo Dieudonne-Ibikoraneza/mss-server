@@ -99,6 +99,12 @@ describe('OrdersService — the payment window runs from the quotation, and neve
       reservationExpiresAt: new Date('2020-01-01'),
       subtotal: 100,
       customer: { email: null },
+      delivery: {
+        contactName: 'Amina',
+        phone: '+250788000000',
+        address: 'KG 1 Ave',
+        city: 'Kigali',
+      },
     };
 
     it('restarts the payment window for an order that holds stock', async () => {
@@ -124,17 +130,34 @@ describe('OrdersService — the payment window runs from the quotation, and neve
       );
     });
 
-    it('leaves a hold-less (waitlisted) order without an expiry', async () => {
+    it('refuses to quote a waitlisted order — it holds no stock yet', async () => {
       prisma.order.findUnique.mockResolvedValue({
         ...pendingHeld,
         status: OrderStatus.WAITLISTED,
         reservationExpiresAt: null,
       });
+      await expect(
+        service.sendQuotation('order-1', { transportFee: 5 }, staff),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    });
 
-      await service.sendQuotation('order-1', { transportFee: 5 }, staff);
+    it('refuses to quote an order with no delivery details', async () => {
+      prisma.order.findUnique.mockResolvedValue({ ...pendingHeld, delivery: null });
+      await expect(
+        service.sendQuotation('order-1', { transportFee: 5 }, staff),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    });
 
-      const { data } = updateManyArg();
-      expect(data.reservationExpiresAt).toBeUndefined();
+    it('refuses delivery details that are only whitespace', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingHeld,
+        delivery: { ...pendingHeld.delivery, address: '   ' },
+      });
+      await expect(
+        service.sendQuotation('order-1', { transportFee: 5 }, staff),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('refuses to re-send once the customer has submitted payment', async () => {
