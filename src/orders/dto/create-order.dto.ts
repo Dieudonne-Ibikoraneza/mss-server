@@ -13,6 +13,7 @@ import {
 } from 'class-validator';
 import { OrderType } from '@prisma/client';
 import { MAX_ORDER_AREA_SQM } from '@/common/utils/tile-calculator';
+import { SaveDeliveryDetailsDto } from './save-delivery-details.dto';
 
 export class OrderItemInputDto {
   @IsUUID()
@@ -42,4 +43,15 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  /**
+   * Delivery details saved in the same transaction as the order — checkout
+   * sends them here so it is one operation: an order can't exist without them
+   * because a second request failed. Staff placing an order on a customer's
+   * behalf can still add them afterwards (`PATCH /orders/:id/delivery-details`).
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaveDeliveryDetailsDto)
+  delivery?: SaveDeliveryDetailsDto;
 }

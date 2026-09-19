@@ -202,6 +202,16 @@ export class OrdersService {
     return order;
   }
 
+  /** Runs a side effect that must never fail the request it belongs to; logs instead. */
+  private async bestEffort(what: string, run: () => unknown): Promise<void> {
+    try {
+      await run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Non-critical step failed after commit — ${what}: ${message}`);
+    }
+  }
+
   /** How long a fresh order holds its stock — `ORDER_RESERVATION_MINUTES`, default 60. */
   private reservationWindowMs(): number {
     const minutes = this.config.get<number>('orders.reservationMinutes') ?? 60;
@@ -745,6 +755,7 @@ export class OrdersService {
           notes: dto.notes,
           quotationStatus: QuotationStatus.AWAITING_REVIEW,
           reservationExpiresAt,
+          delivery: dto.delivery ? { create: dto.delivery } : undefined,
           items: {
             create: lineItems.map((line) => ({
               productId: line.product.id,
@@ -805,41 +816,51 @@ export class OrdersService {
       return { order: created, systemMessage: message };
     });
 
-    // Fired after the transaction commits — a socket push for a message
-    // that then rolled back would be worse than no push at all.
-    if (systemMessage) this.negotiations.emitMessage('order', order.id, systemMessage);
-
-    await invalidateProductsCache(
-      this.redis,
-      lineItems.map((line) => line.product.id),
+    // Everything below runs after the order has committed. None of it may make
+    // the request fail: the customer would be told their checkout failed while
+    // the order and its stock hold exist, and a retry would create a second.
+    if (systemMessage) {
+      // Fired after the transaction commits — a socket push for a message
+      // that then rolled back would be worse than no push at all.
+      await this.bestEffort(`socket push for order ${order.id}`, () =>
+        this.negotiations.emitMessage('order', order.id, systemMessage),
+      );
+    }
+    await this.bestEffort(`product cache invalidation for order ${order.id}`, () =>
+      invalidateProductsCache(
+        this.redis,
+        lineItems.map((line) => line.product.id),
+      ),
     );
-
-    await this.events.recordJourneyEvent({
-      userId: customerId,
-      sessionId: customerId,
-      stage: 'PLACED_ORDER',
-      metadata: { orderId: order.id },
-    });
-    if (shortages.length > 0) {
+    await this.bestEffort(`journey event for order ${order.id}`, async () => {
       await this.events.recordJourneyEvent({
         userId: customerId,
         sessionId: customerId,
-        stage: 'NEGOTIATED',
-        metadata: { orderId: order.id, shortages: shortages.length, waitlisted: isWaitlisted },
+        stage: 'PLACED_ORDER',
+        metadata: { orderId: order.id },
       });
-    }
-
-    if (isWaitlisted) {
-      const customer = await this.prisma.user.findUniqueOrThrow({ where: { id: customerId } });
-      if (customer.email) {
-        await this.notifications.sendOrderWaitlistedEmail(
-          customer.email,
-          customer.fullName,
-          order.orderNumber,
-          order.id,
-          customer.language,
-        );
+      if (shortages.length > 0) {
+        await this.events.recordJourneyEvent({
+          userId: customerId,
+          sessionId: customerId,
+          stage: 'NEGOTIATED',
+          metadata: { orderId: order.id, shortages: shortages.length, waitlisted: isWaitlisted },
+        });
       }
+    });
+    if (isWaitlisted) {
+      await this.bestEffort(`waitlist email for order ${order.id}`, async () => {
+        const customer = await this.prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+        if (customer.email) {
+          await this.notifications.sendOrderWaitlistedEmail(
+            customer.email,
+            customer.fullName,
+            order.orderNumber,
+            order.id,
+            customer.language,
+          );
+        }
+      });
     }
 
     return {
