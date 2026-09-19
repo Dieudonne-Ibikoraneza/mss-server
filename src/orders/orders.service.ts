@@ -31,6 +31,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
+import { canTransitionOrderStatus, ORDER_STATUS_TRANSITIONS } from './order-status-transitions';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
@@ -878,18 +879,33 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found.');
     this.assertNotCancelled(order);
 
-    // A WAITLISTED order only ever leaves that status through
-    // `promoteWaitlistedOrders` — manually forcing it to PENDING (or beyond)
-    // here would skip reserving its stock, leaving a PENDING order with no
-    // hold and no payment clock. Cancelling it outright needs no reservation
-    // step, so that (and re-confirming WAITLISTED itself, a no-op) stays allowed.
+    if (dto.status === order.status) {
+      throw new BadRequestException(`This order is already ${order.status}.`);
+    }
+    // One step forward along the fulfilment line, or a cancellation — no going
+    // back, skipping ahead or changing a DELIVERED order. A WAITLISTED order
+    // only ever leaves that status through `promoteWaitlistedOrders`: forcing
+    // it to PENDING here would skip reserving its stock.
+    if (!canTransitionOrderStatus(order.status, dto.status)) {
+      const allowed = ORDER_STATUS_TRANSITIONS[order.status];
+      throw new BadRequestException(
+        order.status === OrderStatus.WAITLISTED
+          ? 'This order is waitlisted for stock and will be promoted automatically once enough is available. Cancel it instead if it should no longer wait.'
+          : `An order that is ${order.status} cannot move to ${dto.status}.` +
+              (allowed.length > 0 ? ` It can move to: ${allowed.join(', ')}.` : ''),
+      );
+    }
+    // Leaving PENDING onward releases the payment-window hold. That is only
+    // safe once the tiles were taken out of on-hand at payment verification
+    // (`verifyPayment`) — otherwise the hold would vanish with nothing
+    // replacing it and another customer could reserve the same stock.
     if (
-      order.status === OrderStatus.WAITLISTED &&
-      dto.status !== OrderStatus.WAITLISTED &&
-      dto.status !== OrderStatus.CANCELLED
+      order.status === OrderStatus.PENDING &&
+      dto.status !== OrderStatus.CANCELLED &&
+      order.quotationStatus !== QuotationStatus.PAYMENT_VERIFIED
     ) {
       throw new BadRequestException(
-        'This order is waitlisted for stock and will be promoted automatically once enough is available. Cancel it instead if it should no longer wait.',
+        'Verify the customer’s payment before moving this order out of PENDING — until then its stock is only held, not deducted.',
       );
     }
 
@@ -927,18 +943,27 @@ export class OrdersService {
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id },
+      // Claim the transition against the status that was validated above — a
+      // concurrent change (a second click, the expiry sweep, a verification)
+      // must not release or deduct the same stock twice.
+      const claimed = await tx.order.updateMany({
+        where: { id, status: order.status, stockDeductedAt: order.stockDeductedAt },
         data: {
           status: dto.status,
           deliveredAt: dto.status === OrderStatus.DELIVERED ? now : undefined,
           reservationExpiresAt: releasesReservation ? null : undefined,
           stockDeductedAt: deductsStock ? now : returnsStock ? null : undefined,
-          statusEvents: {
-            create: { status: dto.status, note: dto.note, createdById: actingUser.id },
-          },
         },
       });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'This order changed while you were updating it. Refresh and try again.',
+        );
+      }
+      await tx.orderStatusEvent.create({
+        data: { orderId: id, status: dto.status, note: dto.note, createdById: actingUser.id },
+      });
+      const updated = await tx.order.findUniqueOrThrow({ where: { id } });
 
       if (deductsStock) {
         await this.deductOrderStock(tx, order, actingUser.id, 'Order delivered');
