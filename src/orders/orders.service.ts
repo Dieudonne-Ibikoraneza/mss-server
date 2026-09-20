@@ -1,11 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { badRequest, conflict, forbidden, notFound } from '@/common/errors/app-error';
 import { randomInt } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -282,15 +276,15 @@ export class OrdersService {
    */
   private assertCanWriteOrders(actingUser: AuthenticatedUser) {
     if (actingUser.role === Role.DATA_ANALYST) {
-      throw new ForbiddenException('The data analyst role is read-only.');
+      throw forbidden('orders.analystReadOnly', 'The data analyst role is read-only.');
     }
   }
 
   private async assertAccess(orderId: string, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     if (!this.isStaff(actingUser.role) && order.customerId !== actingUser.id) {
-      throw new ForbiddenException('You do not have access to this order.');
+      throw forbidden('orders.noAccess', 'You do not have access to this order.');
     }
     return order;
   }
@@ -673,7 +667,10 @@ export class OrdersService {
         return this.create(dto, actingUser, attempt + 1);
       }
       if (error instanceof InsufficientStockError) {
-        throw new ConflictException('Stock changed while placing this order. Please try again.');
+        throw conflict(
+          'orders.stockChangedWhilePlacing',
+          'Stock changed while placing this order. Please try again.',
+        );
       }
       // Two orders picked the same reference — nothing was created, so a fresh
       // number on another attempt is all it takes.
@@ -702,7 +699,8 @@ export class OrdersService {
     });
     if (!existing) return null;
     if (!sameOrderItems(dto.items, existing.items)) {
-      throw new ConflictException(
+      throw conflict(
+        'orders.checkoutKeyReused',
         'This checkout was already used for a different cart. Reload your cart and place the order again.',
       );
     }
@@ -721,7 +719,10 @@ export class OrdersService {
   private async createOnce(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
     const isStaff = STAFF_ROLES.includes(actingUser.role);
     if (dto.customerId && !isStaff) {
-      throw new ForbiddenException('Only staff can place an order on behalf of another customer.');
+      throw forbidden(
+        'orders.onlyStaffOnBehalf',
+        'Only staff can place an order on behalf of another customer.',
+      );
     }
     const customerId = dto.customerId ?? actingUser.id;
 
@@ -1049,10 +1050,10 @@ export class OrdersService {
 
   async findOne(id: string, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id }, include: ORDER_INCLUDE });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
 
     if (!this.isStaff(actingUser.role) && order.customerId !== actingUser.id) {
-      throw new ForbiddenException('You do not have access to this order.');
+      throw forbidden('orders.noAccess', 'You do not have access to this order.');
     }
     return this.serializeOrder(order, actingUser.role);
   }
@@ -1062,11 +1063,13 @@ export class OrdersService {
       where: { id },
       include: { items: { include: { product: true } } },
     });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     this.assertNotCancelled(order);
 
     if (dto.status === order.status) {
-      throw new BadRequestException(`This order is already ${order.status}.`);
+      throw badRequest('orders.alreadyInStatus', 'This order is already {{status}}.', {
+        status: order.status,
+      });
     }
     // One step forward along the fulfilment line, or a cancellation — no going
     // back, skipping ahead or changing a DELIVERED order. A WAITLISTED order
@@ -1074,12 +1077,24 @@ export class OrdersService {
     // it to PENDING here would skip reserving its stock.
     if (!canTransitionOrderStatus(order.status, dto.status)) {
       const allowed = ORDER_STATUS_TRANSITIONS[order.status];
-      throw new BadRequestException(
-        order.status === OrderStatus.WAITLISTED
-          ? 'This order is waitlisted for stock and will be promoted automatically once enough is available. Cancel it instead if it should no longer wait.'
-          : `An order that is ${order.status} cannot move to ${dto.status}.` +
-              (allowed.length > 0 ? ` It can move to: ${allowed.join(', ')}.` : ''),
-      );
+      if (order.status === OrderStatus.WAITLISTED) {
+        throw badRequest(
+          'orders.waitlistedCannotAdvance',
+          'This order is waitlisted for stock and will be promoted automatically once enough is available. Cancel it instead if it should no longer wait.',
+        );
+      }
+      const params = { from: order.status, to: dto.status, allowed: allowed.join(', ') };
+      throw allowed.length > 0
+        ? badRequest(
+            'orders.cannotMoveWithOptions',
+            'An order that is {{from}} cannot move to {{to}}. It can move to: {{allowed}}.',
+            params,
+          )
+        : badRequest(
+            'orders.cannotMove',
+            'An order that is {{from}} cannot move to {{to}}.',
+            params,
+          );
     }
     // Leaving PENDING onward releases the payment-window hold. That is only
     // safe once the tiles were taken out of on-hand at payment verification
@@ -1090,7 +1105,8 @@ export class OrdersService {
       dto.status !== OrderStatus.CANCELLED &&
       order.quotationStatus !== QuotationStatus.PAYMENT_VERIFIED
     ) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.verifyPaymentFirst',
         'Verify the customer’s payment before moving this order out of PENDING — until then its stock is only held, not deducted.',
       );
     }
@@ -1111,9 +1127,14 @@ export class OrdersService {
         (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
       );
       if (short) {
-        throw new BadRequestException(
-          `Cannot mark delivered: "${short.product.name}" needs ${purchasedAreaOf(short)} m² but only ` +
-            `${Number(short.product.quantityOnHandSqm)} m² are on hand. Restock or adjust the order first.`,
+        throw badRequest(
+          'orders.deliverStockShort',
+          'Cannot mark delivered: "{{name}}" needs {{needed}} m² but only {{onHand}} m² are on hand. Restock or adjust the order first.',
+          {
+            name: short.product.name,
+            needed: purchasedAreaOf(short),
+            onHand: Number(short.product.quantityOnHandSqm),
+          },
         );
       }
     }
@@ -1144,7 +1165,8 @@ export class OrdersService {
           },
         });
         if (claimed.count === 0) {
-          throw new ConflictException(
+          throw conflict(
+            'orders.changedWhileUpdating',
             'This order changed while you were updating it. Refresh and try again.',
           );
         }
@@ -1167,7 +1189,8 @@ export class OrdersService {
       });
     } catch (error) {
       if (error instanceof InsufficientStockError) {
-        throw new BadRequestException(
+        throw badRequest(
+          'orders.stockChangedNoLongerCovers',
           'Cannot complete this change: the stock on hand changed and no longer covers this order. Restock or adjust the order first.',
         );
       }
@@ -1197,24 +1220,34 @@ export class OrdersService {
    */
   async updateItems(id: string, dto: UpdateOrderItemsDto, actingUser: AuthenticatedUser) {
     if (actingUser.role !== Role.ADMIN && actingUser.role !== Role.STOCK_MANAGER) {
-      throw new ForbiddenException('Only the stock team or an administrator can edit an order.');
+      throw forbidden(
+        'orders.onlyStockTeamCanEdit',
+        'Only the stock team or an administrator can edit an order.',
+      );
     }
 
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: { items: { include: { product: { include: { collection: true } } } } },
     });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.WAITLISTED) {
-      throw new BadRequestException('Only pending or waitlisted orders can be edited.');
+      throw badRequest(
+        'orders.onlyPendingOrWaitlistedEditable',
+        'Only pending or waitlisted orders can be edited.',
+      );
     }
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
-      throw new BadRequestException('This order has already been paid and verified.');
+      throw badRequest(
+        'orders.alreadyPaidAndVerified',
+        'This order has already been paid and verified.',
+      );
     }
     // Once the customer says they've paid, what they paid for is frozen: a
     // revision would change the amount and reset the payment behind their back.
     if (order.quotationStatus === QuotationStatus.PAYMENT_SUBMITTED) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.paymentSubmittedCannotEdit',
         'The customer has already submitted payment for this order — verify it, or cancel the order, instead of editing it.',
       );
     }
@@ -1327,7 +1360,8 @@ export class OrdersService {
           data: { status: order.status },
         });
         if (claimed.count === 0) {
-          throw new ConflictException(
+          throw conflict(
+            'orders.changedWhileEditing',
             'This order changed while it was being edited. Refresh and try again.',
           );
         }
@@ -1388,7 +1422,8 @@ export class OrdersService {
       });
     } catch (error) {
       if (error instanceof InsufficientStockError) {
-        throw new ConflictException(
+        throw conflict(
+          'orders.stockChangedWhileEditing',
           'Stock changed while this order was being edited. Refresh and try again.',
         );
       }
@@ -1420,7 +1455,8 @@ export class OrdersService {
     const order = await this.assertAccess(id, actingUser);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.AWAITING_REVIEW) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.deliveryLocked',
         'Delivery details are locked once a quotation has been sent for this order.',
       );
     }
@@ -1439,7 +1475,8 @@ export class OrdersService {
         data: { updatedAt: new Date() },
       });
       if (open.count === 0) {
-        throw new ConflictException(
+        throw conflict(
+          'orders.deliveryLockedMeanwhile',
           'A quotation was sent for this order in the meantime, so its delivery details are now locked.',
         );
       }
@@ -1455,14 +1492,20 @@ export class OrdersService {
 
   private assertCanManageQuotation(actingUser: AuthenticatedUser) {
     if (!QUOTATION_ROLES.includes(actingUser.role)) {
-      throw new ForbiddenException('Only the stock team or an administrator can do this.');
+      throw forbidden(
+        'orders.onlyStockTeamCanDoThis',
+        'Only the stock team or an administrator can do this.',
+      );
     }
   }
 
   /** Cancelled is terminal — nothing about the order (delivery, quotation, status) can change after it. */
   private assertNotCancelled(order: { status: OrderStatus }) {
     if (order.status === OrderStatus.CANCELLED) {
-      throw new BadRequestException('This order was cancelled and can no longer be edited.');
+      throw badRequest(
+        'orders.cancelledCannotEdit',
+        'This order was cancelled and can no longer be edited.',
+      );
     }
   }
 
@@ -1476,21 +1519,28 @@ export class OrdersService {
       where: { id },
       include: { customer: true, delivery: true },
     });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
-      throw new BadRequestException('This quotation has already been paid and verified.');
+      throw badRequest(
+        'orders.quotationAlreadyPaid',
+        'This quotation has already been paid and verified.',
+      );
     }
 
     // A quotation is payable, and it locks the delivery details — so it can
     // only go out once the order is deliverable and its stock is actually held.
     if (order.status === OrderStatus.WAITLISTED) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.quoteWaitlistedNoStock',
         'This order is waitlisted and holds no stock yet. Send the quotation once it has been promoted.',
       );
     }
     if (order.status !== OrderStatus.PENDING || order.reservationExpiresAt === null) {
-      throw new BadRequestException('Stock is not held for this order, so it cannot be quoted.');
+      throw badRequest(
+        'orders.quoteStockNotHeld',
+        'Stock is not held for this order, so it cannot be quoted.',
+      );
     }
     const delivery = order.delivery;
     if (
@@ -1499,12 +1549,14 @@ export class OrdersService {
         (field) => field.trim() !== '',
       )
     ) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.quoteNeedsDelivery',
         'Delivery details (contact, phone, address and city) are required before the quotation can be sent. Add them first — they lock once it is sent.',
       );
     }
     if (order.quotationStatus === QuotationStatus.PAYMENT_SUBMITTED) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.paymentSubmittedCannotResend',
         'The customer has already submitted payment for this quotation — verify it instead of re-sending.',
       );
     }
@@ -1538,7 +1590,8 @@ export class OrdersService {
       },
     });
     if (count === 0) {
-      throw new ConflictException(
+      throw conflict(
+        'orders.changedWhileQuoting',
         'This order changed while the quotation was being sent. Refresh and try again.',
       );
     }
@@ -1571,7 +1624,7 @@ export class OrdersService {
   async viewQuotation(id: string, actingUser: AuthenticatedUser): Promise<Buffer> {
     const order = await this.assertAccess(id, actingUser);
     if (order.quotationStatus === QuotationStatus.AWAITING_REVIEW) {
-      throw new BadRequestException('No quotation has been sent for this order yet.');
+      throw badRequest('orders.noQuotationYet', 'No quotation has been sent for this order yet.');
     }
 
     const full = await this.prisma.order.findUniqueOrThrow({
@@ -1631,13 +1684,15 @@ export class OrdersService {
     const order = await this.assertAccess(id, actingUser);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
-      throw new BadRequestException(
+      throw badRequest(
+        'orders.paymentNeedsQuotation',
         'Payment can only be submitted once a quotation has been sent for this order.',
       );
     }
     if (!order.quotationViewedAt) {
-      throw new BadRequestException(
-        'View the quotation first — GET /orders/:id/quotation — before confirming payment.',
+      throw badRequest(
+        'orders.viewQuotationFirst',
+        'View the quotation first, then confirm your payment.',
       );
     }
 
@@ -1659,7 +1714,8 @@ export class OrdersService {
       },
     });
     if (count === 0) {
-      throw new ConflictException(
+      throw conflict(
+        'orders.changedBeforePayment',
         'This order changed before your payment could be recorded. Refresh and check its status.',
       );
     }
@@ -1682,10 +1738,13 @@ export class OrdersService {
       where: { id },
       include: { customer: true },
     });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
-      throw new BadRequestException('This order has no submitted payment to reject.');
+      throw badRequest(
+        'orders.noPaymentToReject',
+        'This order has no submitted payment to reject.',
+      );
     }
 
     const reason = dto.reason.trim();
@@ -1709,7 +1768,8 @@ export class OrdersService {
         },
       });
       if (claimed.count === 0) {
-        throw new ConflictException(
+        throw conflict(
+          'orders.paymentAlreadyHandled',
           'This payment was already verified or rejected, or the order changed in the meantime. Refresh and check its status.',
         );
       }
@@ -1757,10 +1817,13 @@ export class OrdersService {
       where: { id },
       include: { items: { include: { product: true } }, customer: true },
     });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
-      throw new BadRequestException('This order has no submitted payment awaiting verification.');
+      throw badRequest(
+        'orders.noPaymentToVerify',
+        'This order has no submitted payment awaiting verification.',
+      );
     }
 
     const releasesReservation = order.reservationExpiresAt !== null;
@@ -1780,9 +1843,14 @@ export class OrdersService {
         (item) => purchasedAreaOf(item) > Number(item.product.quantityOnHandSqm),
       );
       if (short) {
-        throw new BadRequestException(
-          `Cannot verify payment: "${short.product.name}" needs ${purchasedAreaOf(short)} m² but only ` +
-            `${Number(short.product.quantityOnHandSqm)} m² are on hand. Restock or adjust the order first.`,
+        throw badRequest(
+          'orders.verifyStockShort',
+          'Cannot verify payment: "{{name}}" needs {{needed}} m² but only {{onHand}} m² are on hand. Restock or adjust the order first.',
+          {
+            name: short.product.name,
+            needed: purchasedAreaOf(short),
+            onHand: Number(short.product.quantityOnHandSqm),
+          },
         );
       }
     }
@@ -1811,7 +1879,8 @@ export class OrdersService {
           },
         });
         if (claimed.count === 0) {
-          throw new ConflictException(
+          throw conflict(
+            'orders.verifyConflict',
             'This payment was already verified, or the order changed in the meantime (for example it was cancelled). Refresh and check its status.',
           );
         }
@@ -1828,7 +1897,8 @@ export class OrdersService {
       });
     } catch (error) {
       if (error instanceof InsufficientStockError) {
-        throw new BadRequestException(
+        throw badRequest(
+          'orders.verifyStockChanged',
           'Cannot verify payment: the stock on hand changed and no longer covers this order. Restock or adjust the order first.',
         );
       }
@@ -1884,7 +1954,10 @@ export class OrdersService {
    */
   private assertCanUseNegotiation(actingUser: AuthenticatedUser) {
     if (actingUser.role === Role.DATA_ANALYST) {
-      throw new ForbiddenException('Negotiations are not available for your role.');
+      throw forbidden(
+        'orders.negotiationsNotForRole',
+        'Negotiations are not available for your role.',
+      );
     }
   }
 

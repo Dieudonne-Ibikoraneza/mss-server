@@ -1,4 +1,5 @@
-import { Injectable, NotImplementedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { notImplemented } from '@/common/errors/app-error';
 import type {
   InitiatePaymentInput,
   InitiatePaymentResult,
@@ -20,7 +21,8 @@ import type {
 export class MomoProvider implements PaymentProvider {
   initiate(_input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
     return Promise.reject(
-      new NotImplementedException(
+      notImplemented(
+        'payments.momoUnavailable',
         'Online Mobile Money payment is not available yet. Pay using the MoMo details on your quotation, then confirm the payment on the order.',
       ),
     );

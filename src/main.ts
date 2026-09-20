@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { validationException } from './common/errors/validation-errors';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { setupSwagger } from './common/swagger';
@@ -33,6 +34,9 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
       transform: true,
       transformOptions: { enableImplicitConversion: true },
+      // 400s keep their English message list and add `code` + per-field `errors`,
+      // which the client turns into the user's language.
+      exceptionFactory: validationException,
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());

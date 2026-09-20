@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { notFound } from '@/common/errors/app-error';
 import { Language, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -65,7 +66,7 @@ export class CollectionsService {
       where: { id },
       include: { products: { where: { isActive: true } } },
     });
-    if (!collection) throw new NotFoundException('Collection not found.');
+    if (!collection) throw notFound('collections.notFound', 'Collection not found.');
 
     const products = staffView
       ? collection.products
@@ -180,6 +181,6 @@ export class CollectionsService {
 
   private async assertExists(id: string) {
     const collection = await this.prisma.collection.findUnique({ where: { id } });
-    if (!collection) throw new NotFoundException('Collection not found.');
+    if (!collection) throw notFound('collections.notFound', 'Collection not found.');
   }
 }

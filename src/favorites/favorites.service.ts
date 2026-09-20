@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { conflict, notFound } from '@/common/errors/app-error';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { ProductsService } from '@/products/products.service';
@@ -34,12 +35,12 @@ export class FavoritesService {
 
   async add(userId: string, productId: string, sessionId: string) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const exists = await this.prisma.favorite.findUnique({
       where: { userId_productId: { userId, productId } },
     });
-    if (exists) throw new ConflictException('Product already saved to favorites.');
+    if (exists) throw conflict('favorites.alreadySaved', 'Product already saved to favorites.');
 
     const favorite = await this.prisma.favorite.create({ data: { userId, productId } });
     await this.events.recordTileEvent({ userId, sessionId, productId, type: 'SAVED' });
@@ -50,7 +51,7 @@ export class FavoritesService {
     const existing = await this.prisma.favorite.findUnique({
       where: { userId_productId: { userId, productId } },
     });
-    if (!existing) throw new NotFoundException('Favorite not found.');
+    if (!existing) throw notFound('favorites.notFound', 'Favorite not found.');
     await this.prisma.favorite.delete({ where: { userId_productId: { userId, productId } } });
   }
 }

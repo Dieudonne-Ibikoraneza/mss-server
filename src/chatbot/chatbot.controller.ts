@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -11,6 +10,7 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { badRequest } from '@/common/errors/app-error';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -102,7 +102,13 @@ export class ChatbotController {
       limits: { fileSize: ROOM_PHOTO_MAX_SIZE },
       fileFilter: (_request, file, callback) => {
         if (!ROOM_PHOTO_MIME_TYPES.includes(file.mimetype)) {
-          callback(new BadRequestException('Only JPEG, PNG, and WebP images are allowed.'), false);
+          callback(
+            badRequest(
+              'upload.imageTypeNotAllowed',
+              'Only JPEG, PNG, and WebP images are allowed.',
+            ),
+            false,
+          );
           return;
         }
         callback(null, true);
@@ -110,7 +116,11 @@ export class ChatbotController {
     }),
   )
   uploadRoomPhoto(@UploadedFile() file?: Express.Multer.File) {
-    if (!file) throw new BadRequestException('A room photo is required in the "file" field.');
+    if (!file)
+      throw badRequest(
+        'chatbot.roomPhotoRequired',
+        'A room photo is required in the "file" field.',
+      );
     return this.chatbotService.uploadRoomPhoto(file);
   }
 

@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -11,6 +10,7 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { badRequest } from '@/common/errors/app-error';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
@@ -57,7 +57,13 @@ export class ProductsController {
       limits: { fileSize: PRODUCT_IMAGE_MAX_SIZE },
       fileFilter: (_request, file, callback) => {
         if (!PRODUCT_IMAGE_MIME_TYPES.includes(file.mimetype)) {
-          callback(new BadRequestException('Only JPEG, PNG, and WebP images are allowed.'), false);
+          callback(
+            badRequest(
+              'upload.imageTypeNotAllowed',
+              'Only JPEG, PNG, and WebP images are allowed.',
+            ),
+            false,
+          );
           return;
         }
         callback(null, true);
@@ -65,7 +71,8 @@ export class ProductsController {
     }),
   )
   uploadImage(@UploadedFile() file?: Express.Multer.File) {
-    if (!file) throw new BadRequestException('An image file is required in the "file" field.');
+    if (!file)
+      throw badRequest('upload.imageRequired', 'An image file is required in the "file" field.');
     return this.storageService.uploadProductImage(file);
   }
 

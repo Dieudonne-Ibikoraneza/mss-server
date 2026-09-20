@@ -1,9 +1,5 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
 import { OrderStatus, PaymentMethod, PaymentStatus, QuotationStatus, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -28,11 +24,11 @@ export class PaymentsService {
   /** Customers may access only their own orders; operational staff may access any order. */
   private async assertOrderAccess(orderId: string, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw notFound('orders.notFound', 'Order not found.');
 
     const isOperationalStaff = this.operationalStaffRoles.includes(actingUser.role);
     if (!isOperationalStaff && order.customerId !== actingUser.id) {
-      throw new ForbiddenException('You do not have access to this order.');
+      throw forbidden('orders.noAccess', 'You do not have access to this order.');
     }
 
     return order;
@@ -45,10 +41,14 @@ export class PaymentsService {
    */
   private assertPaymentReady(order: { status: OrderStatus; quotationStatus: QuotationStatus }) {
     if (order.status === OrderStatus.CANCELLED) {
-      throw new BadRequestException('This order has been cancelled and cannot accept payment.');
+      throw badRequest(
+        'payments.orderCancelled',
+        'This order has been cancelled and cannot accept payment.',
+      );
     }
     if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
-      throw new BadRequestException(
+      throw badRequest(
+        'payments.needsQuotation',
         'A payment can only be initiated once a quotation has been sent for this order and is still awaiting payment.',
       );
     }

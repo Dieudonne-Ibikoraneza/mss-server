@@ -1,4 +1,5 @@
-import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { badRequest } from '@/common/errors/app-error';
 import { ConfigService } from '@nestjs/config';
 import { Language } from '@prisma/client';
 import * as crypto from 'crypto';
@@ -81,7 +82,10 @@ export class OtpService {
     );
     if (!claimed) {
       throw new HttpException(
-        'Please wait before requesting another code.',
+        {
+          message: 'Please wait before requesting another code.',
+          code: 'otp.resendCooldown',
+        },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -134,14 +138,20 @@ export class OtpService {
 
     const record = await this.redis.get<OtpRecord>(key);
     if (!record) {
-      throw new BadRequestException('Code expired or not requested. Please request a new one.');
+      throw badRequest(
+        'otp.codeExpired',
+        'Code expired or not requested. Please request a new one.',
+      );
     }
 
     const attempts = await this.redis.client.incr(attemptsKey);
     if (attempts === 1) await this.redis.client.expire(attemptsKey, this.ttlSeconds);
     if (attempts > this.maxAttempts) {
       await this.redis.del(key);
-      throw new BadRequestException('Too many incorrect attempts. Please request a new code.');
+      throw badRequest(
+        'otp.tooManyAttempts',
+        'Too many incorrect attempts. Please request a new code.',
+      );
     }
 
     if (record.codeHash !== this.hash(code)) return false;
@@ -149,7 +159,10 @@ export class OtpService {
     // Right code — only the request that actually removes it may use it.
     const consumed = await this.redis.client.del(key);
     if (consumed !== 1) {
-      throw new BadRequestException('Code expired or not requested. Please request a new one.');
+      throw badRequest(
+        'otp.codeExpired',
+        'Code expired or not requested. Please request a new one.',
+      );
     }
     await this.redis.del(attemptsKey);
     return true;

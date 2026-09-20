@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, notFound } from '@/common/errors/app-error';
 import { PrismaService } from '@/prisma/prisma.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { availableAreaSqmOf } from '@/common/utils/stock-status';
@@ -18,14 +19,17 @@ export class CalculatorService {
     const baseArea =
       dto.totalAreaSqm ?? (dto.length && dto.width ? dto.length * dto.width : undefined);
     if (!baseArea) {
-      throw new BadRequestException('Provide either totalAreaSqm or both length and width.');
+      throw badRequest(
+        'calculator.areaOrDimensionsRequired',
+        'Provide either totalAreaSqm or both length and width.',
+      );
     }
 
     const product = await this.prisma.product.findUnique({
       where: { id: dto.productId },
       include: { collection: true },
     });
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const wastagePercent = dto.wastagePercent ?? 10;
     const areaWithWastage = baseArea * (1 + wastagePercent / 100);

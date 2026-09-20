@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { forbidden, notFound } from '@/common/errors/app-error';
 import { Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { assertProductsOrderable } from '@/orders/orderable-products';
@@ -70,9 +71,9 @@ export class QuotesService {
 
   async updateStatus(id: string, dto: UpdateQuoteStatusDto, actingUser: AuthenticatedUser) {
     const quote = await this.prisma.quoteRequest.findUnique({ where: { id } });
-    if (!quote) throw new NotFoundException('Quote request not found.');
+    if (!quote) throw notFound('quotes.notFound', 'Quote request not found.');
     if (!STAFF_ROLES.includes(actingUser.role)) {
-      throw new ForbiddenException('Only sales staff can update a quote status.');
+      throw forbidden('quotes.onlySalesCanUpdate', 'Only sales staff can update a quote status.');
     }
 
     if (dto.status === 'NEGOTIATING') {

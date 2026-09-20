@@ -1,10 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, conflict, notFound, unauthorized } from '@/common/errors/app-error';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { UserStatus } from '@prisma/client';
@@ -66,7 +61,7 @@ export class AuthService {
       where: { OR: [{ email: dto.email }, { phone: dto.phone }] },
     });
     if (existing) {
-      throw new ConflictException('An account with this email or phone already exists.');
+      throw conflict('auth.accountExists', 'An account with this email or phone already exists.');
     }
 
     const pending: PendingRegistration = {
@@ -85,7 +80,10 @@ export class AuthService {
   async login(dto: RequestOtpDto) {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (!user) {
-      throw new NotFoundException('No account found for this email. Please register first.');
+      throw notFound(
+        'auth.noAccountRegisterFirst',
+        'No account found for this email. Please register first.',
+      );
     }
 
     // Inactive/suspended accounts get no OTP — but the response is
@@ -107,7 +105,8 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (!user) {
-      throw new NotFoundException(
+      throw notFound(
+        'auth.noAccountOrRegistration',
         'No account or pending registration found for this email. Please register first.',
       );
     }
@@ -126,7 +125,8 @@ export class AuthService {
 
     if (pending) {
       const valid = await this.otp.verify(dto.email, 'register', dto.otp);
-      if (!valid) throw new BadRequestException('Invalid or expired verification code.');
+      if (!valid)
+        throw badRequest('auth.invalidOrExpiredCode', 'Invalid or expired verification code.');
 
       const user = await this.prisma.user.create({
         data: {
@@ -144,13 +144,14 @@ export class AuthService {
     }
 
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (!user) throw new UnauthorizedException('No account found for this email.');
+    if (!user) throw unauthorized('auth.noAccountForEmail', 'No account found for this email.');
 
     const valid = await this.otp.verify(dto.email, 'login', dto.otp);
-    if (!valid) throw new BadRequestException('Invalid or expired verification code.');
+    if (!valid)
+      throw badRequest('auth.invalidOrExpiredCode', 'Invalid or expired verification code.');
 
     if (user.status !== UserStatus.ACTIVE) {
-      throw new UnauthorizedException('This account is not active.');
+      throw unauthorized('auth.accountNotActive', 'This account is not active.');
     }
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
@@ -161,11 +162,11 @@ export class AuthService {
     const tokenHash = this.hashToken(refreshToken);
     const stored = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
     if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
-      throw new UnauthorizedException('Refresh token is invalid or expired.');
+      throw unauthorized('auth.refreshTokenInvalid', 'Refresh token is invalid or expired.');
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: stored.userId } });
-    if (!user) throw new UnauthorizedException('Account no longer exists.');
+    if (!user) throw unauthorized('auth.accountGone', 'Account no longer exists.');
 
     if (user.status !== UserStatus.ACTIVE) {
       // The account went inactive/suspended after this token was issued —
@@ -174,7 +175,7 @@ export class AuthService {
         where: { id: stored.id },
         data: { revokedAt: new Date() },
       });
-      throw new UnauthorizedException('This account is not active.');
+      throw unauthorized('auth.accountNotActive', 'This account is not active.');
     }
 
     await this.prisma.refreshToken.update({

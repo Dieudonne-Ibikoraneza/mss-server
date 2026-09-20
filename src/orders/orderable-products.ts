@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { badRequest } from '@/common/errors/app-error';
 
 /**
  * Every requested product must exist and still be on sale. `alreadyOrdered`
@@ -13,17 +13,23 @@ export function assertProductsOrderable(
   alreadyOrdered: ReadonlySet<string> = new Set(),
 ) {
   if (products.length !== requestedIds.length) {
-    throw new BadRequestException('One or more products could not be found.');
+    throw badRequest('catalog.productsNotFound', 'One or more products could not be found.');
   }
   const unavailable = products.filter(
     (product) => !product.isActive && !alreadyOrdered.has(product.id),
   );
   if (unavailable.length > 0) {
     const names = unavailable.map((product) => `"${product.name}"`).join(', ');
-    throw new BadRequestException(
-      unavailable.length === 1
-        ? `${names} is no longer available. Remove it and try again.`
-        : `${names} are no longer available. Remove them and try again.`,
-    );
+    throw unavailable.length === 1
+      ? badRequest(
+          'catalog.productUnavailableOne',
+          '{{names}} is no longer available. Remove it and try again.',
+          { names },
+        )
+      : badRequest(
+          'catalog.productsUnavailableMany',
+          '{{names}} are no longer available. Remove them and try again.',
+          { names },
+        );
   }
 }

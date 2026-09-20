@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { forbidden, notFound } from '@/common/errors/app-error';
 import { OrderMessageAuthor, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { PaginationDto, paginate } from '@/common/dto/pagination.dto';
@@ -102,9 +103,9 @@ export class CartNegotiationsService {
 
   private async assertAccess(id: string, actingUser: AuthenticatedUser) {
     const negotiation = await this.prisma.cartNegotiation.findUnique({ where: { id } });
-    if (!negotiation) throw new NotFoundException('Negotiation not found.');
+    if (!negotiation) throw notFound('cartNegotiations.notFound', 'Negotiation not found.');
     if (!this.isStaff(actingUser.role) && negotiation.customerId !== actingUser.id) {
-      throw new ForbiddenException('You do not have access to this negotiation.');
+      throw forbidden('cartNegotiations.noAccess', 'You do not have access to this negotiation.');
     }
     return negotiation;
   }

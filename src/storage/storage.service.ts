@@ -1,4 +1,5 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { serviceUnavailable } from '@/common/errors/app-error';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -147,8 +148,9 @@ export class StorageService {
     resourceName: string,
   ) {
     if (!this.supabase) {
-      throw new ServiceUnavailableException(
-        'Supabase storage is not configured. Set STORAGE_DRIVER=supabase and SUPABASE_SERVICE_ROLE_KEY.',
+      throw serviceUnavailable(
+        'storage.notConfigured',
+        'File storage is not set up on this server. Please contact the administrator.',
       );
     }
 
@@ -168,8 +170,14 @@ export class StorageService {
       });
 
     if (uploadError) {
-      throw new ServiceUnavailableException(
-        `Unable to upload ${resourceName} image: ${uploadError.message}`,
+      // The provider's own wording is for the log, not for the person who clicked upload.
+      this.logger.error(`Unable to upload ${resourceName} image: ${uploadError.message}`);
+      throw serviceUnavailable(
+        'storage.uploadFailed',
+        'Unable to upload the {{resource}} image. Please try again.',
+        {
+          resource: resourceName,
+        },
       );
     }
 
@@ -231,8 +239,9 @@ export class StorageService {
    */
   async getSignedUrl(path: string, bucket = PRODUCT_IMAGES_BUCKET): Promise<string> {
     if (!this.supabase) {
-      throw new ServiceUnavailableException(
-        'Supabase storage is not configured. Set STORAGE_DRIVER=supabase and SUPABASE_SERVICE_ROLE_KEY.',
+      throw serviceUnavailable(
+        'storage.notConfigured',
+        'File storage is not set up on this server. Please contact the administrator.',
       );
     }
 
@@ -241,8 +250,12 @@ export class StorageService {
       .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
 
     if (error || !data?.signedUrl) {
-      throw new ServiceUnavailableException(
+      this.logger.error(
         `Could not create an access URL for "${path}": ${error?.message ?? 'unknown error'}`,
+      );
+      throw serviceUnavailable(
+        'storage.accessUrlFailed',
+        'Could not open this file right now. Please try again.',
       );
     }
 

@@ -1,9 +1,5 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
 import { JourneyStage, Prisma, Role, TileEventType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -77,7 +73,9 @@ export class EventsService {
 
   private assertMetadataSize(metadata?: Record<string, unknown>) {
     if (metadata && Buffer.byteLength(JSON.stringify(metadata), 'utf8') > MAX_METADATA_BYTES) {
-      throw new BadRequestException(`Event metadata must not exceed ${MAX_METADATA_BYTES} bytes.`);
+      throw badRequest('events.metadataTooLarge', 'Event metadata must not exceed {{max}} bytes.', {
+        max: MAX_METADATA_BYTES,
+      });
     }
   }
 
@@ -85,7 +83,8 @@ export class EventsService {
   async recordPublicTileEvent(input: RecordTileEventInput) {
     if (isStaffRole(input.role)) return null;
     if (!PUBLIC_TILE_EVENT_TYPES.has(input.type)) {
-      throw new ForbiddenException(
+      throw forbidden(
+        'events.tileEventServerOnly',
         'This tile event can only be recorded by a trusted server action.',
       );
     }
@@ -95,7 +94,7 @@ export class EventsService {
       where: { id: input.productId },
       select: { id: true, isActive: true },
     });
-    if (!product?.isActive) throw new NotFoundException('Product not found.');
+    if (!product?.isActive) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const identity = input.userId ?? input.sessionId;
     const dedupKey = `events:dedup:tile:${identity}:${input.productId}:${input.type}`;
@@ -118,7 +117,8 @@ export class EventsService {
   async recordPublicJourneyEvent(input: RecordJourneyEventInput) {
     if (isStaffRole(input.role)) return null;
     if (!PUBLIC_JOURNEY_STAGES.has(input.stage)) {
-      throw new ForbiddenException(
+      throw forbidden(
+        'events.journeyStageServerOnly',
         'This journey stage can only be recorded by a trusted server action.',
       );
     }

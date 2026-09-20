@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { notFound } from '@/common/errors/app-error';
 import { OrderMessageAuthor, Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { decodeCursor, encodeCursor } from '@/common/utils/cursor';
@@ -94,7 +95,8 @@ export class NegotiationInboxService {
   /** One thread's inbox row — how a live "thread updated" event refreshes a single line instead of the whole list. */
   async summary(kind: NegotiationThreadKind, id: string) {
     const rows = await this.fetch([Prisma.sql`t.kind = ${kind}`, Prisma.sql`t.id = ${id}`], 1);
-    if (rows.length === 0) throw new NotFoundException('Negotiation thread not found.');
+    if (rows.length === 0)
+      throw notFound('negotiationInbox.threadNotFound', 'Negotiation thread not found.');
     return this.toThread(rows[0]);
   }
 

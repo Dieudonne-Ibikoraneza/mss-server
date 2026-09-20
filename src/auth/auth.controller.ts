@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -10,6 +9,7 @@ import {
   Res,
   UnauthorizedException,
 } from '@nestjs/common';
+import { forbidden, unauthorized } from '@/common/errors/app-error';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -65,7 +65,7 @@ export class AuthController {
     const origin = req.headers.origin;
     const allowed = this.config.get<string[]>('app.corsOrigins') ?? [];
     if (origin && !allowed.includes(origin)) {
-      throw new ForbiddenException('This origin is not allowed.');
+      throw forbidden('auth.originNotAllowed', 'This origin is not allowed.');
     }
   }
 
@@ -147,7 +147,7 @@ export class AuthController {
   ) {
     this.assertTrustedOrigin(req);
     const token = readRefreshCookie(req) ?? dto.refreshToken;
-    if (!token) throw new UnauthorizedException('No active session.');
+    if (!token) throw unauthorized('auth.noActiveSession', 'No active session.');
 
     try {
       return this.startSession(res, await this.authService.refresh(token));

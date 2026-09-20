@@ -1,9 +1,5 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
 import { Language, Prisma, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
@@ -62,7 +58,7 @@ export class RoomsService {
 
   async updateRoom(id: string, dto: UpdateRoomDto) {
     const room = await this.prisma.room.findUnique({ where: { id } });
-    if (!room) throw new NotFoundException('Room not found.');
+    if (!room) throw notFound('rooms.notFound', 'Room not found.');
     const translated = await this.translation.translateFields(
       { name: dto.name, description: dto.description },
       Language.EN,
@@ -84,13 +80,21 @@ export class RoomsService {
    */
   async deleteRoom(id: string) {
     const room = await this.prisma.room.findUnique({ where: { id } });
-    if (!room) throw new NotFoundException('Room not found.');
+    if (!room) throw notFound('rooms.notFound', 'Room not found.');
 
     const designCount = await this.prisma.roomDesign.count({ where: { roomId: id } });
     if (designCount > 0) {
-      throw new BadRequestException(
-        `${designCount} saved customer design${designCount === 1 ? '' : 's'} still use this room — hide it instead of deleting.`,
-      );
+      throw designCount === 1
+        ? badRequest(
+            'rooms.usedByOneDesign',
+            '{{count}} saved customer design still use this room — hide it instead of deleting.',
+            { count: designCount },
+          )
+        : badRequest(
+            'rooms.usedByDesigns',
+            '{{count}} saved customer designs still use this room — hide it instead of deleting.',
+            { count: designCount },
+          );
     }
 
     await this.prisma.room.delete({ where: { id } });
@@ -113,13 +117,16 @@ export class RoomsService {
 
   async saveDesign(userId: string, dto: SaveRoomDesignDto) {
     const room = await this.prisma.room.findUnique({ where: { id: dto.roomId } });
-    if (!room) throw new NotFoundException('Room not found.');
+    if (!room) throw notFound('rooms.notFound', 'Room not found.');
 
     // One product per surface — a design can't apply two different floor
     // tiles at once, so a duplicate surface in the payload is a client bug.
     const surfaces = new Set(dto.tiles.map((tile) => tile.surface));
     if (surfaces.size !== dto.tiles.length) {
-      throw new BadRequestException('Each surface (FLOOR, WALL) can only be applied once.');
+      throw badRequest(
+        'rooms.surfaceRepeated',
+        'Each surface (FLOOR, WALL) can only be applied once.',
+      );
     }
 
     const products = await this.prisma.product.findMany({
@@ -129,13 +136,21 @@ export class RoomsService {
     for (const tile of dto.tiles) {
       const product = products.find((p) => p.id === tile.productId);
       if (!product) {
-        throw new BadRequestException(`Product ${tile.productId} could not be found.`);
+        throw badRequest('rooms.tileProductNotFound', 'Product {{id}} could not be found.', {
+          id: tile.productId,
+        });
       }
       // BOTH-rated products go on either surface; FLOOR/WALL-only products
       // can only be placed where they're actually rated for.
       if (product.suitableFor !== SuitableFor.BOTH && product.suitableFor !== tile.surface) {
-        throw new BadRequestException(
-          `"${product.name}" is a ${product.suitableFor.toLowerCase()} tile and can't be placed on the ${tile.surface.toLowerCase()}.`,
+        throw badRequest(
+          'rooms.tileWrongSurface',
+          '"{{name}}" is a {{tile}} tile and can\'t be placed on the {{surface}}.',
+          {
+            name: product.name,
+            tile: product.suitableFor.toLowerCase(),
+            surface: tile.surface.toLowerCase(),
+          },
         );
       }
     }
@@ -183,9 +198,9 @@ export class RoomsService {
       where: { id },
       include: DESIGN_INCLUDE,
     });
-    if (!design) throw new NotFoundException('Design not found.');
+    if (!design) throw notFound('rooms.designNotFound', 'Design not found.');
     if (!isStaff && design.userId !== actingUserId && !design.sharedWithSales) {
-      throw new ForbiddenException('You do not have access to this design.');
+      throw forbidden('rooms.designNoAccess', 'You do not have access to this design.');
     }
     return this.withSerializedTiles(design);
   }

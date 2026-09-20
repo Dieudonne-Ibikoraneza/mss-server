@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { badRequest, notFound } from '@/common/errors/app-error';
 import { Language, RoomType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { PAYMENT_SETTING_KEYS } from './payment-details';
@@ -50,7 +51,9 @@ export class SettingsService {
     const entries = Object.entries(patch);
     const unknown = entries.filter(([key]) => !isSettingKey(key)).map(([key]) => key);
     if (unknown.length > 0) {
-      throw new BadRequestException(`Unknown setting(s): ${unknown.join(', ')}.`);
+      throw badRequest('settings.unknownSettings', 'Unknown setting(s): {{keys}}.', {
+        keys: unknown.join(', '),
+      });
     }
     // Every value is checked against what its setting holds, and text is trimmed.
     const validated = entries.map(
@@ -144,7 +147,7 @@ export class SettingsService {
 
   private async findQuestion(id: string) {
     const question = await this.prisma.profilingQuestion.findUnique({ where: { id } });
-    if (!question) throw new NotFoundException('Profiling question not found.');
+    if (!question) throw notFound('settings.questionNotFound', 'Profiling question not found.');
     return question;
   }
 }

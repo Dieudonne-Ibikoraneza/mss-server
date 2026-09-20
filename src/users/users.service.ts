@@ -1,10 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { badRequest, conflict, notFound } from '@/common/errors/app-error';
 import { OrderStatus, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -62,7 +57,7 @@ export class UsersService {
 
   async findById(id: string) {
     const user = await this.prisma.user.findUnique({ where: { id }, select: SAFE_USER_SELECT });
-    if (!user) throw new NotFoundException('User not found.');
+    if (!user) throw notFound('users.notFound', 'User not found.');
     return user;
   }
 
@@ -131,7 +126,7 @@ export class UsersService {
       where: { OR: [{ email: dto.email }, { phone: dto.phone }] },
     });
     if (existing) {
-      throw new ConflictException('An account with this email or phone already exists.');
+      throw conflict('auth.accountExists', 'An account with this email or phone already exists.');
     }
 
     const staff = await this.prisma.user.create({
@@ -168,7 +163,7 @@ export class UsersService {
       where: { id, role: { in: STAFF_ROLES } },
       select: SAFE_USER_SELECT,
     });
-    if (!staff) throw new NotFoundException('Staff member not found.');
+    if (!staff) throw notFound('users.staffNotFound', 'Staff member not found.');
     return staff;
   }
 
@@ -178,14 +173,15 @@ export class UsersService {
       const existing = await this.prisma.user.findFirst({
         where: { phone: dto.phone, id: { not: id } },
       });
-      if (existing) throw new ConflictException('Another account already uses this phone number.');
+      if (existing)
+        throw conflict('users.phoneInUse', 'Another account already uses this phone number.');
     }
     return this.prisma.user.update({ where: { id }, data: dto, select: SAFE_USER_SELECT });
   }
 
   async setStaffStatus(id: string, status: 'ACTIVE' | 'INACTIVE', currentUserId: string) {
     if (id === currentUserId && status === 'INACTIVE') {
-      throw new BadRequestException('You cannot deactivate your own account.');
+      throw badRequest('users.cannotDeactivateSelf', 'You cannot deactivate your own account.');
     }
     await this.findStaffById(id);
 
@@ -303,7 +299,7 @@ export class UsersService {
       where: { id, role: Role.CLIENT },
       select: SAFE_USER_SELECT,
     });
-    if (!customer) throw new NotFoundException('Customer not found.');
+    if (!customer) throw notFound('users.customerNotFound', 'Customer not found.');
 
     const [aggregate, orders, ordersTotal, favorites, designs] = await Promise.all([
       this.prisma.order.aggregate({

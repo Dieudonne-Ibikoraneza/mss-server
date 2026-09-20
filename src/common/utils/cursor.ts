@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { badRequest } from '@/common/errors/app-error';
 
 /**
  * Keyset ("seek") pagination position: the sort key of the last row a client
@@ -36,6 +36,6 @@ export const decodeCursor = (cursor: string): KeysetCursor => {
     }
     return { at, id: parsed.id };
   } catch {
-    throw new BadRequestException('Invalid cursor.');
+    throw badRequest('common.invalidCursor', 'Invalid cursor.');
   }
 };

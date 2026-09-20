@@ -1,9 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, conflict, notFound } from '@/common/errors/app-error';
 import { Language, Prisma, Role, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -198,7 +194,7 @@ export class ProductsService {
       this.prisma.product.findUnique({ where: { id }, include: { collection: true } }),
       getLowStockThreshold(this.prisma),
     ]);
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const result = await this.serialize(product, threshold, viewerRole);
     await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
@@ -272,7 +268,7 @@ export class ProductsService {
       return await run();
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new ConflictException('This SKU is already in use by another product.');
+        throw conflict('products.skuInUse', 'This SKU is already in use by another product.');
       }
       throw error;
     }
@@ -356,7 +352,7 @@ export class ProductsService {
       where: { id: dto.productId },
       include: { collection: true },
     });
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const quantity = calculateTileQuantity(dto.areaSqm, {
       tileAreaSqm: Number(product.collection.tileAreaSqm),
@@ -372,15 +368,16 @@ export class ProductsService {
 
   async adjustStock(productId: string, dto: AdjustStockDto, adjustedById: string) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const nextQuantity = new Prisma.Decimal(product.quantityOnHandSqm).add(dto.changeAreaSqm);
     if (nextQuantity.isNegative()) {
-      throw new BadRequestException('Adjustment would result in negative stock.');
+      throw badRequest('products.negativeStock', 'Adjustment would result in negative stock.');
     }
 
     if (dto.costPrice !== undefined && dto.changeAreaSqm <= 0) {
-      throw new BadRequestException(
+      throw badRequest(
+        'products.costOnlyForIncoming',
         'A cost price only applies to stock coming in (changeAreaSqm must be positive).',
       );
     }

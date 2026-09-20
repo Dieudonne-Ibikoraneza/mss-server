@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { notFound } from '@/common/errors/app-error';
 import {
   ChatRole,
   Language,
@@ -90,7 +91,7 @@ export class ChatbotService {
       where: { id: conversationId },
     });
     if (!conversation || conversation.userId !== userId) {
-      throw new NotFoundException('Conversation not found.');
+      throw notFound('chatbot.conversationNotFound', 'Conversation not found.');
     }
     return conversation;
   }
@@ -453,7 +454,8 @@ export class ChatbotService {
 
   private async findRecommendation(id: string) {
     const recommendation = await this.prisma.recommendation.findUnique({ where: { id } });
-    if (!recommendation) throw new NotFoundException('Recommendation not found.');
+    if (!recommendation)
+      throw notFound('chatbot.recommendationNotFound', 'Recommendation not found.');
     return recommendation;
   }
 
@@ -615,7 +617,7 @@ export class ChatbotService {
       getLowStockThreshold(this.prisma),
     ]);
     if (rows.length !== dto.productIds.length) {
-      throw new NotFoundException('One or more products could not be found.');
+      throw notFound('catalog.productsNotFound', 'One or more products could not be found.');
     }
 
     // This endpoint is public (anonymous visitors can compare products), so
@@ -672,7 +674,7 @@ export class ChatbotService {
       where: { id: dto.productId },
       include: { collection: true },
     });
-    if (!product) throw new NotFoundException('Product not found.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const userMessage = await this.prisma.chatMessage.create({
       data: {
@@ -856,7 +858,8 @@ export class ChatbotService {
 
   async updateKnowledgeBaseEntry(id: string, dto: UpdateKnowledgeBaseEntryDto) {
     const existing = await this.prisma.knowledgeBaseEntry.findUnique({ where: { id } });
-    if (!existing) throw new NotFoundException('Knowledge base entry not found.');
+    if (!existing)
+      throw notFound('chatbot.knowledgeEntryNotFound', 'Knowledge base entry not found.');
 
     return this.prisma.knowledgeBaseEntry.update({
       where: { id },
@@ -866,7 +869,8 @@ export class ChatbotService {
 
   async deleteKnowledgeBaseEntry(id: string) {
     const existing = await this.prisma.knowledgeBaseEntry.findUnique({ where: { id } });
-    if (!existing) throw new NotFoundException('Knowledge base entry not found.');
+    if (!existing)
+      throw notFound('chatbot.knowledgeEntryNotFound', 'Knowledge base entry not found.');
 
     await this.prisma.knowledgeBaseEntry.deleteMany({
       where: { OR: [{ id }, { translatedFromId: id }] },

@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { badRequest, notFound } from '@/common/errors/app-error';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { StorageService } from '@/storage/storage.service';
@@ -139,8 +140,9 @@ export class CartService {
       where: { id: dto.productId },
       select: { isActive: true },
     });
-    if (!product) throw new NotFoundException('Product not found.');
-    if (!product.isActive) throw new BadRequestException('This product is no longer available.');
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
+    if (!product.isActive)
+      throw badRequest('cart.productUnavailable', 'This product is no longer available.');
     const cart = await this.getOrCreateCart(userId);
     return this.retryOnUniqueRace(() =>
       this.prisma.cartItem.upsert({
@@ -156,7 +158,7 @@ export class CartService {
     const item = await this.prisma.cartItem.findUnique({
       where: { cartId_productId: { cartId: cart.id, productId } },
     });
-    if (!item) throw new NotFoundException('Item not in cart.');
+    if (!item) throw notFound('cart.itemNotInCart', 'Item not in cart.');
     await this.prisma.cartItem.delete({ where: { id: item.id } });
   }
 
