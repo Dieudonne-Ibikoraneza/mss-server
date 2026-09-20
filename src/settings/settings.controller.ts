@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Query,
+  ParseEnumPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Language, Role, RoomType } from '@prisma/client';
@@ -58,7 +59,10 @@ export class SettingsController {
     description: "Pass `roomType` to get the always-asked questions plus that room's conditionals.",
   })
   @Get('profiling-questions')
-  listQuestions(@Query('language') language?: Language, @Query('roomType') roomType?: RoomType) {
+  listQuestions(
+    @Query('language', new ParseEnumPipe(Language, { optional: true })) language?: Language,
+    @Query('roomType', new ParseEnumPipe(RoomType, { optional: true })) roomType?: RoomType,
+  ) {
     return roomType
       ? this.settingsService.listQuestionsForRoom(roomType, language)
       : this.settingsService.listQuestions(language);

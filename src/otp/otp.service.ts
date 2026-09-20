@@ -10,7 +10,6 @@ export type OtpPurpose = 'register' | 'login';
 
 interface OtpRecord {
   codeHash: string;
-  attempts: number;
   purpose: OtpPurpose;
 }
 
@@ -52,6 +51,11 @@ export class OtpService {
     return `otp:cooldown:${purpose}:${destination}`;
   }
 
+  /** Guesses made against the current code — a plain counter Redis increments atomically. */
+  private attemptsKey(destination: string, purpose: OtpPurpose) {
+    return `otp:attempts:${purpose}:${destination}`;
+  }
+
   private hash(code: string) {
     return crypto.createHash('sha256').update(code).digest('hex');
   }
@@ -68,8 +72,14 @@ export class OtpService {
     purpose: OtpPurpose,
     language: Language = Language.EN,
   ) {
-    const onCooldown = await this.redis.get(this.cooldownKey(destination, purpose));
-    if (onCooldown) {
+    // One atomic claim — checking the cooldown and then setting it lets two
+    // simultaneous requests both pass and both send a code.
+    const claimed = await this.redis.setIfAbsent(
+      this.cooldownKey(destination, purpose),
+      '1',
+      this.resendCooldownSeconds,
+    );
+    if (!claimed) {
       throw new HttpException(
         'Please wait before requesting another code.',
         HttpStatus.TOO_MANY_REQUESTS,
@@ -77,9 +87,10 @@ export class OtpService {
     }
 
     const code = this.generateCode();
-    const record: OtpRecord = { codeHash: this.hash(code), attempts: 0, purpose };
+    const record: OtpRecord = { codeHash: this.hash(code), purpose };
     await this.redis.set(this.codeKey(destination, purpose), record, this.ttlSeconds);
-    await this.redis.set(this.cooldownKey(destination, purpose), '1', this.resendCooldownSeconds);
+    // A new code starts with a clean slate of guesses.
+    await this.redis.del(this.attemptsKey(destination, purpose));
 
     if (this.devBypassCode) {
       // Dev bypass is on — skip the real send entirely (no SMTP/SMS calls,
@@ -101,32 +112,46 @@ export class OtpService {
     };
   }
 
+  /**
+   * Checks a code. Every guess is counted with one atomic `INCR` *before* it is
+   * compared, so any number of simultaneous guesses share the same budget of
+   * `maxAttempts` — a read-then-write counter lets a burst of parallel guesses
+   * all read "0 attempts" and all be evaluated. A right code is consumed with a
+   * single `DEL` whose result decides the winner, so it can be used only once
+   * even if submitted twice at the same moment.
+   */
   async verify(destination: string, purpose: OtpPurpose, code: string): Promise<boolean> {
+    const key = this.codeKey(destination, purpose);
+    const attemptsKey = this.attemptsKey(destination, purpose);
+
     // Dev-only bypass: always accepts `devBypassCode`, real code or not, so
     // login/register can be exercised without a working email/SMS provider.
     if (this.devBypassCode && code === this.devBypassCode) {
-      await this.redis.del(this.codeKey(destination, purpose));
+      await this.redis.del(key);
+      await this.redis.del(attemptsKey);
       return true;
     }
 
-    const key = this.codeKey(destination, purpose);
     const record = await this.redis.get<OtpRecord>(key);
     if (!record) {
       throw new BadRequestException('Code expired or not requested. Please request a new one.');
     }
 
-    if (record.attempts >= this.maxAttempts) {
+    const attempts = await this.redis.client.incr(attemptsKey);
+    if (attempts === 1) await this.redis.client.expire(attemptsKey, this.ttlSeconds);
+    if (attempts > this.maxAttempts) {
       await this.redis.del(key);
       throw new BadRequestException('Too many incorrect attempts. Please request a new code.');
     }
 
-    if (record.codeHash !== this.hash(code)) {
-      record.attempts += 1;
-      await this.redis.set(key, record, this.ttlSeconds);
-      return false;
-    }
+    if (record.codeHash !== this.hash(code)) return false;
 
-    await this.redis.del(key);
+    // Right code — only the request that actually removes it may use it.
+    const consumed = await this.redis.client.del(key);
+    if (consumed !== 1) {
+      throw new BadRequestException('Code expired or not requested. Please request a new one.');
+    }
+    await this.redis.del(attemptsKey);
     return true;
   }
 }

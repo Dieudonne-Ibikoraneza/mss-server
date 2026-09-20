@@ -113,5 +113,8 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1"
     }
+  },
+  "overrides": {
+    "multer": "2.4.0"
   }
 }

@@ -132,11 +132,7 @@ export class ChatbotService {
     });
 
     const [history, knowledgeBase, candidateProducts, lowStockThreshold] = await Promise.all([
-      this.prisma.chatMessage.findMany({
-        where: { conversationId: conversation.id },
-        orderBy: { createdAt: 'asc' },
-        take: 20,
-      }),
+      this.recentMessages(conversation.id),
       this.prisma.knowledgeBaseEntry.findMany({
         where: { isActive: true, language: conversation.language },
         take: 10,
@@ -794,6 +790,22 @@ export class ChatbotService {
         },
       },
     };
+  }
+
+  /**
+   * The newest `limit` turns of a conversation, oldest first — what the model is
+   * shown as context. Taking the first N by date instead meant that once a
+   * conversation passed N messages the model stopped seeing anything recent,
+   * including the message that had just been sent.
+   */
+  recentMessages(conversationId: string, limit = 20) {
+    return this.prisma.chatMessage
+      .findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      })
+      .then((recent) => recent.reverse());
   }
 
   listKnowledgeBase() {

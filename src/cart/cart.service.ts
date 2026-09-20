@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { StorageService } from '@/storage/storage.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
@@ -42,12 +43,31 @@ export class CartService {
     }
   }
 
-  private async getOrCreateCart(userId: string) {
-    return this.prisma.cart.upsert({
-      where: { userId },
-      update: {},
-      create: { userId },
-    });
+  /**
+   * Prisma's `upsert` isn't atomic here: two requests arriving together for a
+   * customer with no cart both see "missing", both insert, and the loser fails
+   * on the unique key (a 500). The row exists by then, so a second attempt is a
+   * plain update and succeeds.
+   */
+  private async retryOnUniqueRace<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return run();
+      }
+      throw error;
+    }
+  }
+
+  private getOrCreateCart(userId: string) {
+    return this.retryOnUniqueRace(() =>
+      this.prisma.cart.upsert({
+        where: { userId },
+        update: {},
+        create: { userId },
+      }),
+    );
   }
 
   async view(userId: string) {
@@ -122,11 +142,13 @@ export class CartService {
     if (!product) throw new NotFoundException('Product not found.');
     if (!product.isActive) throw new BadRequestException('This product is no longer available.');
     const cart = await this.getOrCreateCart(userId);
-    return this.prisma.cartItem.upsert({
-      where: { cartId_productId: { cartId: cart.id, productId: dto.productId } },
-      update: { areaSqm: dto.areaSqm },
-      create: { cartId: cart.id, productId: dto.productId, areaSqm: dto.areaSqm },
-    });
+    return this.retryOnUniqueRace(() =>
+      this.prisma.cartItem.upsert({
+        where: { cartId_productId: { cartId: cart.id, productId: dto.productId } },
+        update: { areaSqm: dto.areaSqm },
+        create: { cartId: cart.id, productId: dto.productId, areaSqm: dto.areaSqm },
+      }),
+    );
   }
 
   async removeItem(userId: string, productId: string) {

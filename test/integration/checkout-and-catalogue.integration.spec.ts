@@ -67,6 +67,18 @@ describe('checkout and catalogue rules', () => {
     expect(new Set(numbers).size).toBe(8);
   });
 
+  it('a brand-new customer’s first cart requests, all at once, all succeed (no unique-key 500 on the cart row)', async () => {
+    const fresh = await createActors();
+    const cart = new CartService(prisma as never, {} as never);
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () => cart.view(fresh.customer.id)),
+    );
+
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(0);
+    expect(await prisma.cart.count({ where: { userId: fresh.customer.id } })).toBe(1);
+  });
+
   describe('inactive products', () => {
     it('cannot be ordered, and the refusal names the product', async () => {
       const product = await createProduct(actors, {

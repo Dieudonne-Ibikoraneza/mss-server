@@ -56,13 +56,9 @@ const roomOf = ({ kind, id }: JoinPayload) => `${kind}:${id}`;
  *   negotiations inbox to reorder/highlight live without joining every thread.
  */
 @UseFilters(BaseWsExceptionFilter)
-@WebSocketGateway({
-  namespace: '/negotiations',
-  cors: {
-    origin: (process.env.CORS_ORIGINS ?? 'http://localhost:3000').split(',').map((o) => o.trim()),
-    credentials: true,
-  },
-})
+// CORS for this gateway comes from `ConfiguredIoAdapter` (main.ts), not from
+// here: a decorator option is evaluated at import time, before .env is loaded.
+@WebSocketGateway({ namespace: '/negotiations' })
 export class NegotiationsGateway implements OnGatewayInit, OnGatewayConnection {
   private readonly logger = new Logger(NegotiationsGateway.name);
 

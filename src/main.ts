@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { setupSwagger } from './common/swagger';
+import { ConfiguredIoAdapter } from './negotiations/configured-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -20,6 +21,11 @@ async function bootstrap() {
     origin: config.get<string[]>('app.corsOrigins'),
     credentials: true,
   });
+
+  // Same origins for the negotiations WebSocket as for the HTTP API.
+  app.useWebSocketAdapter(
+    new ConfiguredIoAdapter(app, config.get<string[]>('app.corsOrigins') ?? []),
+  );
 
   app.useGlobalPipes(
     new ValidationPipe({

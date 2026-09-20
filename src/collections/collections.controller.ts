@@ -16,6 +16,8 @@ import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nes
 import { Role } from '@prisma/client';
 import { memoryStorage } from 'multer';
 import { Public } from '@/common/decorators/public.decorator';
+import { CurrentUser } from '@/common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { CollectionsService } from './collections.service';
 import { CreateCollectionDto } from './dto/create-collection.dto';
@@ -74,8 +76,8 @@ export class CollectionsController {
   @Public()
   @ApiOperation({ summary: 'Get a collection by id' })
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.collectionsService.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user?: AuthenticatedUser) {
+    return this.collectionsService.findOne(id, user?.role);
   }
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)

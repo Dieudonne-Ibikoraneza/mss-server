@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
+import { assertProductsOrderable } from '@/orders/orderable-products';
 import { EventsService } from '@/events/events.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -17,10 +18,14 @@ export class QuotesService {
   ) {}
 
   async create(userId: string, dto: CreateQuoteRequestDto) {
+    // The same rule as an order: every product must exist and still be on sale.
+    // (Looking a product up with `!` turned an unknown id into a 500.)
+    const requestedIds = [...new Set(dto.items.map((item) => item.productId))];
     const products = await this.prisma.product.findMany({
-      where: { id: { in: dto.items.map((item) => item.productId) } },
+      where: { id: { in: requestedIds } },
       include: { collection: true },
     });
+    assertProductsOrderable(requestedIds, products);
 
     const items = dto.items.map((item) => {
       const product = products.find((p) => p.id === item.productId)!;
