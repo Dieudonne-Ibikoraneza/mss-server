@@ -1200,40 +1200,54 @@ export class AnalyticsService {
     const previousFrom = new Date(resolved.from.getTime() - spanMs);
     const inRange = { gte: resolved.from, lt: resolved.to };
 
-    const [earnedOrders, previousTotal, placedOrders, byStatusRaw, bestSelling, repeatPurchase] =
-      await Promise.all([
-        this.prisma.order.findMany({
-          where: { ...EARNED_WHERE, paymentVerifiedAt: inRange },
-          select: {
-            subtotal: true,
-            transportFee: true,
-            paymentVerifiedAt: true,
-            createdByType: true,
-          },
-        }),
-        this.prisma.order.aggregate({
-          where: { ...EARNED_WHERE, paymentVerifiedAt: { gte: previousFrom, lt: resolved.from } },
-          _sum: { subtotal: true },
-        }),
-        // Orders placed in the period, whatever became of them.
-        this.prisma.order.count({ where: { createdAt: inRange } }),
-        this.prisma.order.groupBy({
-          by: ['status'],
-          where: { createdAt: inRange },
-          _count: { _all: true },
-          _sum: { subtotal: true },
-        }),
-        this.prisma.orderItem.groupBy({
-          by: ['productId'],
-          // Same "earned" scope as `earnedOrders` above — an item on an unpaid
-          // or cancelled order hasn't actually sold anything.
-          where: { order: { ...EARNED_WHERE, paymentVerifiedAt: inRange } },
-          _sum: { totalPrice: true, totalPieces: true },
-          orderBy: { _sum: { totalPrice: 'desc' } },
-          take: 10,
-        }),
-        this.repeatPurchaseRateValue(),
-      ]);
+    const [
+      earnedOrders,
+      previousTotal,
+      placedOrders,
+      unpaidOrders,
+      byStatusRaw,
+      bestSelling,
+      repeatPurchase,
+    ] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { ...EARNED_WHERE, paymentVerifiedAt: inRange },
+        select: {
+          subtotal: true,
+          transportFee: true,
+          paymentVerifiedAt: true,
+          createdByType: true,
+        },
+      }),
+      this.prisma.order.aggregate({
+        where: { ...EARNED_WHERE, paymentVerifiedAt: { gte: previousFrom, lt: resolved.from } },
+        _sum: { subtotal: true },
+      }),
+      // Orders placed in the period, whatever became of them.
+      this.prisma.order.count({ where: { createdAt: inRange } }),
+      // Waiting on the customer to pay, right now — the same pile as the overview's `pendingOrders`.
+      this.prisma.order.count({
+        where: {
+          status: OrderStatus.PENDING,
+          quotationStatus: { not: QuotationStatus.PAYMENT_VERIFIED },
+        },
+      }),
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where: { createdAt: inRange },
+        _count: { _all: true },
+        _sum: { subtotal: true },
+      }),
+      this.prisma.orderItem.groupBy({
+        by: ['productId'],
+        // Same "earned" scope as `earnedOrders` above — an item on an unpaid
+        // or cancelled order hasn't actually sold anything.
+        where: { order: { ...EARNED_WHERE, paymentVerifiedAt: inRange } },
+        _sum: { totalPrice: true, totalPieces: true },
+        orderBy: { _sum: { totalPrice: 'desc' } },
+        take: 10,
+      }),
+      this.repeatPurchaseRateValue(),
+    ]);
 
     const productIds = bestSelling.map((row) => row.productId);
     const products = await this.prisma.product.findMany({ where: { id: { in: productIds } } });
@@ -1275,6 +1289,7 @@ export class AnalyticsService {
       // and, separately, how many of them earned money (the average is over those).
       totalOrders: placedOrders,
       paidOrders: earnedOrders.length,
+      unpaidOrders,
       averageOrderValue: earnedOrders.length ? totalSales / earnedOrders.length : 0,
       ...repeatPurchase,
       byStatus,

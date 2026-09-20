@@ -161,6 +161,7 @@ describe('analytics figures match the scenario that produced them', () => {
     expect(overview.totalSales).toBe(sales.totalSales); // the two dashboards must agree for the same period
     expect(sales.totalSales).toBe(700);
     expect(sales.paidOrders).toBe(3);
+    expect(sales.unpaidOrders).toBe(2); // the sales page's "pending" card, same meaning as the overview's
     expect(sales.averageOrderValue).toBeCloseTo(700 / 3);
   });
 
