@@ -48,3 +48,36 @@ export async function reserveAreaAtomically(
   `);
   if (updated !== entries.length) throw new InsufficientStockError();
 }
+
+/**
+ * Takes stock out of on-hand only where the product still has it
+ * (`quantityOnHandSqm >= amount`), decided inside the UPDATE — the same
+ * single-statement guard `reserveAreaAtomically` uses. Two verifications (or a
+ * verification and a manual stock correction) can't both spend the same tiles;
+ * whichever comes second finds too little and this throws
+ * `InsufficientStockError`, which must roll the surrounding transaction back.
+ * Amounts are positive (how much to remove); same-product entries are summed.
+ */
+export async function deductOnHandAtomically(
+  tx: Prisma.TransactionClient,
+  removals: { productId: string; areaSqm: number }[],
+): Promise<void> {
+  const byProduct = new Map<string, number>();
+  for (const { productId, areaSqm } of removals) {
+    if (areaSqm === 0) continue;
+    byProduct.set(productId, (byProduct.get(productId) ?? 0) + areaSqm);
+  }
+  const entries = [...byProduct.entries()].sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return;
+
+  const rows = Prisma.join(
+    entries.map(([productId, area]) => Prisma.sql`(${productId}::text, ${area}::numeric)`),
+  );
+  const updated = await tx.$executeRaw(Prisma.sql`
+    UPDATE "Product" AS p
+    SET "quantityOnHandSqm" = p."quantityOnHandSqm" - v."area"
+    FROM (VALUES ${rows}) AS v("id", "area")
+    WHERE p."id" = v."id" AND p."quantityOnHandSqm" >= v."area"
+  `);
+  if (updated !== entries.length) throw new InsufficientStockError();
+}

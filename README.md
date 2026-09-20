@@ -414,3 +414,9 @@ optional local convenience.
 If your Postgres sits behind a connection pooler (e.g. Supabase's pgbouncer),
 also set `DIRECT_URL` to a non-pooled connection — `prisma migrate` needs
 that for DDL.
+
+
+## Tests
+
+- `npm test` — unit tests (mocked database, no setup needed).
+- `npm run test:integration` — the order lifecycle against **real Postgres**: simultaneous checkouts, waitlist promotion, expiry versus payment, payment verification versus cancellation, quotation freezing, order numbers. It needs `DATABASE_URL` (and `DIRECT_URL`) in `.env`, and it never touches real data: each run builds a throwaway schema `it_<id>` on that database, applies every migration into it, and drops it afterwards. Expect a few minutes over a remote database (about 50 s of that is applying the migrations).

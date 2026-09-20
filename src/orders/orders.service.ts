@@ -32,7 +32,11 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
-import { InsufficientStockError, reserveAreaAtomically } from './stock-reservation.util';
+import {
+  deductOnHandAtomically,
+  InsufficientStockError,
+  reserveAreaAtomically,
+} from './stock-reservation.util';
 import { canTransitionOrderStatus, ORDER_STATUS_TRANSITIONS } from './order-status-transitions';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
@@ -386,12 +390,11 @@ export class OrdersService {
     actingUserId: string,
     reason: string,
   ) {
-    await this.bulkAdjustProductArea(
+    await deductOnHandAtomically(
       tx,
-      'quantityOnHandSqm',
       order.items.map((item) => ({
         productId: item.productId,
-        deltaAreaSqm: -purchasedAreaOf(item),
+        areaSqm: purchasedAreaOf(item),
       })),
     );
     await tx.stockAdjustment.createMany({
@@ -1078,41 +1081,51 @@ export class OrdersService {
 
     const now = new Date();
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Claim the transition against the status that was validated above — a
-      // concurrent change (a second click, the expiry sweep, a verification)
-      // must not release or deduct the same stock twice.
-      const claimed = await tx.order.updateMany({
-        where: { id, status: order.status, stockDeductedAt: order.stockDeductedAt },
-        data: {
-          status: dto.status,
-          deliveredAt: dto.status === OrderStatus.DELIVERED ? now : undefined,
-          reservationExpiresAt: releasesReservation ? null : undefined,
-          stockDeductedAt: deductsStock ? now : returnsStock ? null : undefined,
-        },
+    let result;
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        // Claim the transition against the status that was validated above — a
+        // concurrent change (a second click, the expiry sweep, a verification)
+        // must not release or deduct the same stock twice.
+        const claimed = await tx.order.updateMany({
+          where: { id, status: order.status, stockDeductedAt: order.stockDeductedAt },
+          data: {
+            status: dto.status,
+            deliveredAt: dto.status === OrderStatus.DELIVERED ? now : undefined,
+            reservationExpiresAt: releasesReservation ? null : undefined,
+            stockDeductedAt: deductsStock ? now : returnsStock ? null : undefined,
+          },
+        });
+        if (claimed.count === 0) {
+          throw new ConflictException(
+            'This order changed while you were updating it. Refresh and try again.',
+          );
+        }
+        await tx.orderStatusEvent.create({
+          data: { orderId: id, status: dto.status, note: dto.note, createdById: actingUser.id },
+        });
+        const updated = await tx.order.findUniqueOrThrow({ where: { id } });
+
+        if (deductsStock) {
+          await this.deductOrderStock(tx, order, actingUser.id, 'Order delivered');
+        }
+        if (returnsStock) {
+          await this.returnOrderStock(tx, order, actingUser.id, 'Order cancelled — stock returned');
+        }
+        if (releasesReservation) {
+          await this.releaseReservedStock(tx, order.items);
+        }
+
+        return updated;
       });
-      if (claimed.count === 0) {
-        throw new ConflictException(
-          'This order changed while you were updating it. Refresh and try again.',
+    } catch (error) {
+      if (error instanceof InsufficientStockError) {
+        throw new BadRequestException(
+          'Cannot complete this change: the stock on hand changed and no longer covers this order. Restock or adjust the order first.',
         );
       }
-      await tx.orderStatusEvent.create({
-        data: { orderId: id, status: dto.status, note: dto.note, createdById: actingUser.id },
-      });
-      const updated = await tx.order.findUniqueOrThrow({ where: { id } });
-
-      if (deductsStock) {
-        await this.deductOrderStock(tx, order, actingUser.id, 'Order delivered');
-      }
-      if (returnsStock) {
-        await this.returnOrderStock(tx, order, actingUser.id, 'Order cancelled — stock returned');
-      }
-      if (releasesReservation) {
-        await this.releaseReservedStock(tx, order.items);
-      }
-
-      return updated;
-    });
+      throw error;
+    }
 
     const productIds = order.items.map((item) => item.productId);
     if (deductsStock || returnsStock || releasesReservation) {
@@ -1640,26 +1653,53 @@ export class OrdersService {
       }
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // Payment landing is itself "advancing" (doc: "verifying payment and
-      // processing") — release the hold here even if staff hasn't separately
-      // moved the fulfilment `status` off PENDING yet.
-      if (releasesReservation) {
-        await this.releaseReservedStock(tx, order.items);
-      }
-      if (deductsStock) {
-        await this.deductOrderStock(tx, order, actingUser.id, 'Payment verified');
-      }
-      return tx.order.update({
-        where: { id },
-        data: {
-          quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
-          paymentVerifiedAt: now,
-          reservationExpiresAt: releasesReservation ? null : undefined,
-          stockDeductedAt: deductsStock ? now : undefined,
-        },
+    let updated;
+    try {
+      updated = await this.prisma.$transaction(async (tx) => {
+        // Claim the payment first, on exactly the state that was validated
+        // above: still PAYMENT_SUBMITTED, not cancelled, stock and hold as
+        // read. Two staff verifying at once, or a verification racing a
+        // cancellation or edit, leave one winner — the loser matches nothing
+        // and never touches stock, so nothing is released or deducted twice.
+        const claimed = await tx.order.updateMany({
+          where: {
+            id,
+            quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
+            status: { not: OrderStatus.CANCELLED },
+            stockDeductedAt: order.stockDeductedAt,
+            reservationExpiresAt: order.reservationExpiresAt,
+          },
+          data: {
+            quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+            paymentVerifiedAt: now,
+            reservationExpiresAt: releasesReservation ? null : undefined,
+            stockDeductedAt: deductsStock ? now : undefined,
+          },
+        });
+        if (claimed.count === 0) {
+          throw new ConflictException(
+            'This payment was already verified, or the order changed in the meantime (for example it was cancelled). Refresh and check its status.',
+          );
+        }
+        // Payment landing is itself "advancing" (doc: "verifying payment and
+        // processing") — release the hold here even if staff hasn't separately
+        // moved the fulfilment `status` off PENDING yet.
+        if (releasesReservation) {
+          await this.releaseReservedStock(tx, order.items);
+        }
+        if (deductsStock) {
+          await this.deductOrderStock(tx, order, actingUser.id, 'Payment verified');
+        }
+        return tx.order.findUniqueOrThrow({ where: { id } });
       });
-    });
+    } catch (error) {
+      if (error instanceof InsufficientStockError) {
+        throw new BadRequestException(
+          'Cannot verify payment: the stock on hand changed and no longer covers this order. Restock or adjust the order first.',
+        );
+      }
+      throw error;
+    }
 
     const productIds = order.items.map((item) => item.productId);
     if (releasesReservation || deductsStock) {
