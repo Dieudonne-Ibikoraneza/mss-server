@@ -44,6 +44,7 @@ import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
 import { renderQuotationPdf } from './quotation-pdf.util';
+import { readPaymentDetails } from '@/settings/payment-details';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
 import { CartNegotiationsService } from '@/cart-negotiations/cart-negotiations.service';
 
@@ -1619,6 +1620,8 @@ export class OrdersService {
       delivery: full.delivery
         ? { address: full.delivery.address, city: full.delivery.city, phone: full.delivery.phone }
         : null,
+      // Read now, not cached: an admin's change is on the next quotation opened.
+      payment: await readPaymentDetails(this.prisma),
     });
   }
 

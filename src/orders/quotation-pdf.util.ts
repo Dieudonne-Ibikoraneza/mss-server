@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import type { SuitableFor } from '@prisma/client';
+import type { PaymentDetails } from '@/settings/payment-details';
 
 /** Everything the quotation PDF needs — kept as a plain shape rather than a
  * Prisma payload type so this module doesn't need to know the include tree. */
@@ -26,6 +27,12 @@ export interface QuotationPdfInput {
   transportFeeNote: string | null;
   total: number;
   delivery: { address: string; city: string; phone: string } | null;
+  /**
+   * Where the customer pays, as set by an admin in Settings. There is no payment
+   * gateway behind this system: the customer pays outside it (MoMo or bank
+   * transfer) and then marks the order as paid from the order screen.
+   */
+  payment: PaymentDetails;
 }
 
 // Palette lifted from the storefront's own quotation screen, so the PDF and
@@ -34,23 +41,6 @@ const NAVY = '#1e3a5f';
 const GRAY_LABEL = '#6b7280';
 const GRAY_LINE = '#e5e7eb';
 const BLACK = '#111827';
-
-/**
- * The business's own MoMo/bank accounts — there is no payment gateway API
- * behind this system, so a customer pays outside it (MoMo code or bank
- * transfer) and then marks the order as paid from the order screen. Mirrors
- * the same constant the storefront shows inline on the quotation card
- * (`paymentInstructions` in `data/order-workflow.ts`) so the PDF and the
- * in-app view never disagree.
- */
-const PAYMENT_INSTRUCTIONS = {
-  momoCode: '*182*8*1*45231#',
-  momoName: 'Magnificat Smart Space Ltd',
-  bankName: 'Bank of Kigali',
-  bankAccountName: 'Magnificat Smart Space Ltd',
-  bankAccountNumber: '00040-11223344-55',
-  bankSwift: 'BKIGRWRW',
-};
 
 const SUITABLE_FOR_LABEL: Record<SuitableFor, string> = {
   FLOOR: 'Floor Tile',
@@ -249,31 +239,55 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
 
     // --- Payment details ---------------------------------------------------
     label(doc, 'PAYMENT DETAILS');
-    doc
-      .fontSize(9.5)
-      .fillColor(GRAY_LABEL)
-      .font('Helvetica')
-      .text(
-        'Pay the total above via either option, then mark this order as paid from the order screen.',
-      );
-    doc.moveDown(0.6);
-
-    doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('MoMo Pay');
-    doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold').text(PAYMENT_INSTRUCTIONS.momoCode);
-    doc.fontSize(9).fillColor(GRAY_LABEL).font('Helvetica').text(PAYMENT_INSTRUCTIONS.momoName);
-
-    doc.moveDown(0.6);
-    doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('Bank transfer');
-    doc
-      .fontSize(10)
-      .fillColor(BLACK)
-      .font('Helvetica')
-      .text(`${PAYMENT_INSTRUCTIONS.bankName} — ${PAYMENT_INSTRUCTIONS.bankAccountNumber}`);
-    doc
-      .fontSize(9)
-      .fillColor(GRAY_LABEL)
-      .font('Helvetica')
-      .text(`${PAYMENT_INSTRUCTIONS.bankAccountName} · SWIFT ${PAYMENT_INSTRUCTIONS.bankSwift}`);
+    const { payment } = order;
+    const hasMomo = payment.momoCode.trim() !== '';
+    const hasBank = payment.bankAccountNumber.trim() !== '';
+    if (!hasMomo && !hasBank) {
+      // Nothing has been set up yet — say so rather than print invented details.
+      doc
+        .fontSize(9.5)
+        .fillColor(GRAY_LABEL)
+        .font('Helvetica')
+        .text(
+          'Payment details for this order will be sent to you by our team. Please contact us before paying.',
+        );
+    } else {
+      doc
+        .fontSize(9.5)
+        .fillColor(GRAY_LABEL)
+        .font('Helvetica')
+        .text(
+          `Pay the total above ${hasMomo && hasBank ? 'via either option' : 'as shown below'}, then mark this order as paid from the order screen.`,
+        );
+      if (hasMomo) {
+        doc.moveDown(0.6);
+        doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('MoMo Pay');
+        doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold').text(payment.momoCode);
+        if (payment.momoName) {
+          doc.fontSize(9).fillColor(GRAY_LABEL).font('Helvetica').text(payment.momoName);
+        }
+      }
+      if (hasBank) {
+        doc.moveDown(0.6);
+        doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold').text('Bank transfer');
+        doc
+          .fontSize(10)
+          .fillColor(BLACK)
+          .font('Helvetica')
+          .text(
+            [payment.bankName, payment.bankAccountNumber].filter((part) => part !== '').join(' — '),
+          );
+        const accountLine = [
+          payment.bankAccountName,
+          payment.bankSwift ? `SWIFT ${payment.bankSwift}` : '',
+        ]
+          .filter((part) => part !== '')
+          .join(' · ');
+        if (accountLine) {
+          doc.fontSize(9).fillColor(GRAY_LABEL).font('Helvetica').text(accountLine);
+        }
+      }
+    }
 
     doc.moveDown(1.4);
     doc

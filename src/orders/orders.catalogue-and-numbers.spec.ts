@@ -63,12 +63,25 @@ describe('quotation PDF uses the recorded unit price and the billed area', () =>
         }),
         updateMany: jest.fn(),
       },
+      // The payment details an admin has entered in Settings.
+      platformSetting: {
+        findMany: jest.fn().mockResolvedValue([
+          { key: 'payment.momoCode', value: '*182*8*1*99999#' },
+          { key: 'payment.bankAccountNumber', value: '123-456' },
+        ]),
+      },
     };
     await makeService(prisma).viewQuotation('o1', customer);
     const calls = (renderQuotationPdf as jest.Mock).mock.calls as [
-      [{ items: Record<string, number>[] }],
+      [{ items: Record<string, number>[]; payment: Record<string, string> }],
     ];
     const input = calls[0][0];
+    // What is printed as "where to pay" comes from the settings, not from the code.
+    expect(input.payment).toMatchObject({
+      momoCode: '*182*8*1*99999#',
+      bankAccountNumber: '123-456',
+      bankSwift: '',
+    });
     expect(input.items[0]).toEqual(
       expect.objectContaining({
         requestedAreaSqm: 3.1,

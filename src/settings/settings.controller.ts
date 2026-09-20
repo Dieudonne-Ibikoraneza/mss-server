@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Language, Role, RoomType } from '@prisma/client';
+import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Public } from '@/common/decorators/public.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { SettingsService } from './settings.service';
@@ -49,8 +50,8 @@ export class SettingsController {
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Update platform settings (admin)' })
   @Patch()
-  update(@Body() dto: UpdateSettingsDto) {
-    return this.settingsService.update(dto.settings);
+  update(@Body() dto: UpdateSettingsDto, @CurrentUser('id') userId: string) {
+    return this.settingsService.update(dto.settings, userId);
   }
 
   @Public()

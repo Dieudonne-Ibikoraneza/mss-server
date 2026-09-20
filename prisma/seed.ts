@@ -481,12 +481,8 @@ async function main() {
     'notifications.lowStockAlerts': true,
     'notifications.orderUpdates': true,
     'notifications.systemNotifications': true,
-    'payment.momoCode': '*182*8*1*45231#',
-    'payment.momoName': 'Magnificat Smart Space Ltd',
-    'payment.bankName': 'Bank of Kigali',
-    'payment.bankAccountName': 'Magnificat Smart Space Ltd',
-    'payment.bankAccountNumber': '00040-11223344-55',
-    'payment.bankSwift': 'BKIGRWRW',
+    // payment.* is deliberately not seeded: the real MoMo/bank details are entered by an admin
+    // (Settings → Payment details), never invented.
     'support.phone': '+250 788 300 400',
     'support.email': 'support@magnificatsmartspace.rw',
     'support.whatsapp': '+250 788 300 400',

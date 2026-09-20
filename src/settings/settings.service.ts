@@ -1,6 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Language, Prisma, RoomType } from '@prisma/client';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Language, RoomType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
+import { PAYMENT_SETTING_KEYS } from './payment-details';
+import { validateSettingValue } from './settings.validation';
 import {
   PUBLIC_SETTING_KEYS,
   SETTINGS_DEFAULTS,
@@ -21,6 +23,8 @@ import {
  */
 @Injectable()
 export class SettingsService {
+  private readonly logger = new Logger(SettingsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /** Stored rows merged over the defaults, so callers always get every key. */
@@ -42,23 +46,40 @@ export class SettingsService {
     >;
   }
 
-  async update(patch: Record<string, unknown>) {
+  async update(patch: Record<string, unknown>, actingUserId?: string) {
     const entries = Object.entries(patch);
     const unknown = entries.filter(([key]) => !isSettingKey(key)).map(([key]) => key);
     if (unknown.length > 0) {
       throw new BadRequestException(`Unknown setting(s): ${unknown.join(', ')}.`);
     }
+    // Every value is checked against what its setting holds, and text is trimmed.
+    const validated = entries.map(
+      ([key, value]) => [key, validateSettingValue(key as SettingKey, value)] as const,
+    );
+
+    // Where customers pay is what a fraudster would change: leave a trail of who
+    // changed which field, and when.
+    const before = await this.findAll();
+    const changedPaymentFields = validated
+      .filter(([key]) => (PAYMENT_SETTING_KEYS as readonly string[]).includes(key))
+      .filter(([key, value]) => before[key as SettingKey] !== value)
+      .map(([key]) => key);
 
     await this.prisma.$transaction(
-      entries.map(([key, value]) =>
+      validated.map(([key, value]) =>
         this.prisma.platformSetting.upsert({
           where: { key },
-          create: { key, value: value as Prisma.InputJsonValue },
-          update: { value: value as Prisma.InputJsonValue },
+          create: { key, value },
+          update: { value },
         }),
       ),
     );
 
+    if (changedPaymentFields.length > 0) {
+      this.logger.warn(
+        `Payment details changed by user ${actingUserId ?? 'unknown'}: ${changedPaymentFields.join(', ')}`,
+      );
+    }
     return this.findAll();
   }
 

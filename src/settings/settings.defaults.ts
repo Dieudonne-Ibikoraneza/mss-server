@@ -22,13 +22,16 @@ export const SETTINGS_DEFAULTS = {
   'notifications.orderUpdates': true,
   'notifications.systemNotifications': true,
 
-  // Shown verbatim on every quotation sent to a customer.
-  'payment.momoCode': '*182*8*1*45231#',
-  'payment.momoName': 'Magnificat Smart Space Ltd',
-  'payment.bankName': 'Bank of Kigali',
-  'payment.bankAccountName': 'Magnificat Smart Space Ltd',
-  'payment.bankAccountNumber': '00040-11223344-55',
-  'payment.bankSwift': 'BKIGRWRW',
+  // Where customers pay, printed on every quotation PDF. Empty until an admin
+  // enters the business's real details (Settings → Payment details): the app
+  // never invents a MoMo code or a bank account for customers to pay into. A
+  // payment method with no number set is left off the quotation.
+  'payment.momoCode': '',
+  'payment.momoName': '',
+  'payment.bankName': '',
+  'payment.bankAccountName': '',
+  'payment.bankAccountNumber': '',
+  'payment.bankSwift': '',
 
   // Support channels offered when a customer needs help with an order.
   'support.phone': '+250 788 300 400',
