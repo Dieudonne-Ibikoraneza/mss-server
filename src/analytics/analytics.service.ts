@@ -5,6 +5,7 @@ import {
   OrderCreatorType,
   OrderStatus,
   Prisma,
+  QuotationStatus,
   Role,
   RoomType,
   TileEventType,
@@ -36,8 +37,38 @@ const JOURNEY_ORDER: JourneyStage[] = [
   JourneyStage.PURCHASED,
 ];
 
-/** Orders that represent money actually earned, for every revenue figure below. */
-const EARNED_STATUSES: OrderStatus[] = [OrderStatus.SHIPPED, OrderStatus.DELIVERED];
+/**
+ * Money actually earned, for every revenue figure below: the customer's payment
+ * was verified and the order was not cancelled afterwards. Shipping and delivery
+ * are not part of it — the money is in once staff verify the payment — so
+ * revenue is dated by `paymentVerifiedAt`, the day it arrived.
+ */
+const EARNED_WHERE = {
+  quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+  status: { not: OrderStatus.CANCELLED },
+  paymentVerifiedAt: { not: null },
+} satisfies Prisma.OrderWhereInput;
+
+const isEarned = (order: { quotationStatus: QuotationStatus; status: OrderStatus }) =>
+  order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED &&
+  order.status !== OrderStatus.CANCELLED;
+
+/** The day a verified payment arrived (every earned order has one). */
+const earnedAt = (order: { paymentVerifiedAt: Date | null }) => order.paymentVerifiedAt as Date;
+
+/**
+ * Two customers who "are the same person" must be counted once. The storefront
+ * records browsing under a per-browser session id, the server records orders
+ * under the customer's user id — so events are identified by the user when one
+ * is known (directly, or because the same session id also appears on an event
+ * that names its user), and by the session id only for genuinely anonymous visitors.
+ */
+const journeyIdentity = (events: { userId: string | null; sessionId: string }[]) => {
+  const userBySession = new Map<string, string>();
+  for (const event of events) if (event.userId) userBySession.set(event.sessionId, event.userId);
+  return (event: { userId: string | null; sessionId: string }) =>
+    event.userId ?? userBySession.get(event.sessionId) ?? event.sessionId;
+};
 
 const CREATOR_TYPES: OrderCreatorType[] = [OrderCreatorType.CUSTOMER, OrderCreatorType.STAFF];
 
@@ -55,9 +86,10 @@ const orderSubtotal = (order: { subtotal: Prisma.Decimal }) => Number(order.subt
  * KPI card and the "Orders by Creator" chart need — one total per creator
  * type for the card, the same split bucketed over the period for the chart.
  */
-const creatorBreakdown = <T extends { createdAt: Date; createdByType: OrderCreatorType }>(
-  orders: (T & { subtotal: Prisma.Decimal })[],
+const creatorBreakdown = <T extends { createdByType: OrderCreatorType; subtotal: Prisma.Decimal }>(
+  orders: T[],
   resolved: ResolvedPeriod,
+  dateOf: (order: T) => Date,
 ) => {
   const byCreator = CREATOR_TYPES.map((createdByType) => {
     const rows = orders.filter((order) => order.createdByType === createdByType);
@@ -74,7 +106,7 @@ const creatorBreakdown = <T extends { createdAt: Date; createdByType: OrderCreat
       bucketize(
         orders.filter((order) => order.createdByType === createdByType),
         resolved,
-        (order) => order.createdAt,
+        dateOf,
         orderSubtotal,
       ),
     ]),
@@ -155,6 +187,7 @@ export class AnalyticsService {
       earnedOrders,
       totalOrders,
       pendingOrders,
+      pendingFulfillments,
       totalCustomers,
       repeatCustomers,
       recommendations,
@@ -163,12 +196,26 @@ export class AnalyticsService {
       funnel,
     ] = await Promise.all([
       this.prisma.order.findMany({
-        where: { status: { in: EARNED_STATUSES } },
-        select: { subtotal: true, transportFee: true, createdAt: true, createdByType: true },
+        where: EARNED_WHERE,
+        select: {
+          subtotal: true,
+          transportFee: true,
+          paymentVerifiedAt: true,
+          createdByType: true,
+        },
       }),
       this.prisma.order.count(),
+      // Placed but not yet paid: waiting on the customer.
       this.prisma.order.count({
         where: {
+          status: OrderStatus.PENDING,
+          quotationStatus: { not: QuotationStatus.PAYMENT_VERIFIED },
+        },
+      }),
+      // Paid and not yet shipped: waiting on the warehouse.
+      this.prisma.order.count({
+        where: {
+          quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
           status: {
             in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.READY_FOR_DISPATCH],
           },
@@ -177,7 +224,11 @@ export class AnalyticsService {
       this.prisma.user.count({ where: { role: 'CLIENT' } }),
       this.prisma.order.groupBy({
         by: ['customerId'],
-        where: { status: { not: OrderStatus.CANCELLED } },
+        // A repeat customer is one who paid more than once — not one with two unpaid or waitlisted orders.
+        where: {
+          quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+          status: { not: OrderStatus.CANCELLED },
+        },
         _count: { _all: true },
         having: { customerId: { _count: { gt: 1 } } },
       }),
@@ -198,7 +249,7 @@ export class AnalyticsService {
       0,
     );
     const accepted = recommendations.filter((row) => row.decision === 'ACCEPTED').length;
-    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved);
+    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved, earnedAt);
 
     return {
       period: resolved.period,
@@ -207,6 +258,7 @@ export class AnalyticsService {
       totalTransportFees,
       totalOrders,
       pendingOrders,
+      pendingFulfillments,
       averageOrderValue: earnedOrders.length ? totalSales / earnedOrders.length : 0,
       byCreator,
       creatorTrend,
@@ -230,7 +282,7 @@ export class AnalyticsService {
         (total, row) => total + Number(row.quantityOnHandSqm) * Number(row.averageCostPrice),
         0,
       ),
-      revenueTrend: bucketize(earnedOrders, resolved, (order) => order.createdAt, orderSubtotal),
+      revenueTrend: bucketize(earnedOrders, resolved, earnedAt, orderSubtotal),
       funnel,
     };
   }
@@ -340,7 +392,7 @@ export class AnalyticsService {
     const items = await this.prisma.orderItem.findMany({
       include: {
         product: { select: { roomTypes: true } },
-        order: { select: { customerId: true, total: true, status: true } },
+        order: { select: { customerId: true, total: true, status: true, quotationStatus: true } },
       },
     });
 
@@ -355,7 +407,7 @@ export class AnalyticsService {
       for (const roomType of roomTypes) {
         if (!customers.has(roomType)) customers.set(roomType, new Set());
         customers.get(roomType)!.add(item.order.customerId);
-        if (EARNED_STATUSES.includes(item.order.status)) {
+        if (isEarned(item.order)) {
           revenue.set(roomType, (revenue.get(roomType) ?? 0) + share);
         }
       }
@@ -437,7 +489,7 @@ export class AnalyticsService {
       // themselves, for the "Sold" column's sqm sub-line.
       this.prisma.orderItem.groupBy({
         by: ['productId'],
-        where: { order: { createdAt: inRange, status: { in: EARNED_STATUSES } } },
+        where: { order: { ...EARNED_WHERE, paymentVerifiedAt: inRange } },
         _sum: { requiredAreaSqm: true },
       }),
       getLowStockThreshold(this.prisma),
@@ -569,17 +621,19 @@ export class AnalyticsService {
    */
   async conversionFunnel() {
     const events = await this.prisma.customerJourneyEvent.findMany({
-      select: { sessionId: true, stage: true },
+      select: { sessionId: true, userId: true, stage: true },
     });
 
-    const furthestIndexBySession = new Map<string, number>();
+    const identify = journeyIdentity(events);
+    const furthestIndexByPerson = new Map<string, number>();
     for (const event of events) {
       const index = JOURNEY_ORDER.indexOf(event.stage);
       if (index === -1) continue;
-      const current = furthestIndexBySession.get(event.sessionId) ?? -1;
-      if (index > current) furthestIndexBySession.set(event.sessionId, index);
+      const person = identify(event);
+      const current = furthestIndexByPerson.get(person) ?? -1;
+      if (index > current) furthestIndexByPerson.set(person, index);
     }
-    const furthestIndexes = [...furthestIndexBySession.values()];
+    const furthestIndexes = [...furthestIndexByPerson.values()];
 
     return JOURNEY_ORDER.map((stage, stageIndex) => ({
       stage,
@@ -599,7 +653,7 @@ export class AnalyticsService {
       this.conversionFunnel(),
       this.prisma.customerJourneyEvent.findMany({
         where: { createdAt: { gte: resolved.from, lt: resolved.to } },
-        select: { createdAt: true, sessionId: true, stage: true },
+        select: { createdAt: true, sessionId: true, userId: true, stage: true },
       }),
     ]);
 
@@ -615,7 +669,8 @@ export class AnalyticsService {
       };
     });
 
-    const sessions = new Set(events.map((row) => row.sessionId));
+    const identify = journeyIdentity(events);
+    const sessions = new Set(events.map((row) => identify(row)));
     const purchased = funnel.find((row) => row.stage === JourneyStage.PURCHASED)?.customers ?? 0;
 
     return {
@@ -1115,7 +1170,10 @@ export class AnalyticsService {
     const [repeatCustomers, totalCustomers] = await Promise.all([
       this.prisma.order.groupBy({
         by: ['customerId'],
-        where: { status: { not: OrderStatus.CANCELLED } },
+        where: {
+          quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+          status: { not: OrderStatus.CANCELLED },
+        },
         _count: { _all: true },
         having: { customerId: { _count: { gt: 1 } } },
       }),
@@ -1142,19 +1200,23 @@ export class AnalyticsService {
     const previousFrom = new Date(resolved.from.getTime() - spanMs);
     const inRange = { gte: resolved.from, lt: resolved.to };
 
-    const [earnedOrders, previousTotal, byStatusRaw, bestSelling, repeatPurchase] =
+    const [earnedOrders, previousTotal, placedOrders, byStatusRaw, bestSelling, repeatPurchase] =
       await Promise.all([
         this.prisma.order.findMany({
-          where: { status: { in: EARNED_STATUSES }, createdAt: inRange },
-          select: { subtotal: true, transportFee: true, createdAt: true, createdByType: true },
+          where: { ...EARNED_WHERE, paymentVerifiedAt: inRange },
+          select: {
+            subtotal: true,
+            transportFee: true,
+            paymentVerifiedAt: true,
+            createdByType: true,
+          },
         }),
         this.prisma.order.aggregate({
-          where: {
-            status: { in: EARNED_STATUSES },
-            createdAt: { gte: previousFrom, lt: resolved.from },
-          },
+          where: { ...EARNED_WHERE, paymentVerifiedAt: { gte: previousFrom, lt: resolved.from } },
           _sum: { subtotal: true },
         }),
+        // Orders placed in the period, whatever became of them.
+        this.prisma.order.count({ where: { createdAt: inRange } }),
         this.prisma.order.groupBy({
           by: ['status'],
           where: { createdAt: inRange },
@@ -1163,9 +1225,9 @@ export class AnalyticsService {
         }),
         this.prisma.orderItem.groupBy({
           by: ['productId'],
-          // Same "earned" scope as `earnedOrders` above — an item on a
-          // pending or cancelled order hasn't actually sold anything yet.
-          where: { order: { createdAt: inRange, status: { in: EARNED_STATUSES } } },
+          // Same "earned" scope as `earnedOrders` above — an item on an unpaid
+          // or cancelled order hasn't actually sold anything.
+          where: { order: { ...EARNED_WHERE, paymentVerifiedAt: inRange } },
           _sum: { totalPrice: true, totalPieces: true },
           orderBy: { _sum: { totalPrice: 'desc' } },
           take: 10,
@@ -1199,8 +1261,8 @@ export class AnalyticsService {
       count: row._count._all,
       total: Number(row._sum.subtotal ?? 0),
     }));
-    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved);
-    const trend = bucketize(earnedOrders, resolved, (order) => order.createdAt, orderSubtotal);
+    const { byCreator, creatorTrend } = creatorBreakdown(earnedOrders, resolved, earnedAt);
+    const trend = bucketize(earnedOrders, resolved, earnedAt, orderSubtotal);
 
     return {
       period: resolved.period,
@@ -1209,7 +1271,10 @@ export class AnalyticsService {
       totalTransportFees,
       previousTotalSales,
       percentChangeVsLastPeriod: percentChange(totalSales, previousTotalSales),
-      totalOrders: earnedOrders.length,
+      // Orders placed in the period — the same meaning as the Overview's total —
+      // and, separately, how many of them earned money (the average is over those).
+      totalOrders: placedOrders,
+      paidOrders: earnedOrders.length,
       averageOrderValue: earnedOrders.length ? totalSales / earnedOrders.length : 0,
       ...repeatPurchase,
       byStatus,

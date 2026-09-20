@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { badRequest, conflict, notFound } from '@/common/errors/app-error';
-import { OrderStatus, Prisma, Role, UserStatus } from '@prisma/client';
+import { OrderStatus, Prisma, QuotationStatus, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
@@ -28,12 +28,14 @@ const SAFE_USER_SELECT = {
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.DATA_ANALYST, Role.ADMIN];
 
 /**
- * Orders that count towards a customer's spend — only fully delivered ones.
- * Pending, processing, shipped, waitlisted and cancelled orders are all
- * excluded: nothing is "spent" until the customer has actually received it,
- * so the customer directory and "Top Customers" rank on realised revenue.
+ * Orders that count towards a customer's spend — the ones whose payment staff
+ * verified and that were not cancelled afterwards, the same rule the sales
+ * analytics use. Unpaid, waitlisted and cancelled orders are excluded.
  */
-const SPENDING_STATUS = OrderStatus.DELIVERED;
+const SPENDING_WHERE = {
+  quotationStatus: QuotationStatus.PAYMENT_VERIFIED,
+  status: { not: OrderStatus.CANCELLED },
+} satisfies Prisma.OrderWhereInput;
 
 const searchFilter = (search?: string): Prisma.UserWhereInput =>
   search
@@ -224,7 +226,7 @@ export class UsersService {
         this.prisma.user.findMany({ where, select: SAFE_USER_SELECT }),
         this.prisma.order.groupBy({
           by: ['customerId'],
-          where: { status: SPENDING_STATUS },
+          where: SPENDING_WHERE,
           _sum: { total: true },
           _count: { _all: true },
           _max: { createdAt: true },
@@ -262,7 +264,7 @@ export class UsersService {
 
     const stats = await this.prisma.order.groupBy({
       by: ['customerId'],
-      where: { customerId: { in: items.map((item) => item.id) }, status: SPENDING_STATUS },
+      where: { customerId: { in: items.map((item) => item.id) }, ...SPENDING_WHERE },
       _sum: { total: true },
       _count: { _all: true },
       _max: { createdAt: true },
@@ -303,7 +305,7 @@ export class UsersService {
 
     const [aggregate, orders, ordersTotal, favorites, designs] = await Promise.all([
       this.prisma.order.aggregate({
-        where: { customerId: id, status: SPENDING_STATUS },
+        where: { customerId: id, ...SPENDING_WHERE },
         _sum: { total: true },
         _count: { _all: true },
         _max: { createdAt: true },

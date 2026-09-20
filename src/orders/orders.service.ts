@@ -378,6 +378,7 @@ export class OrdersService {
   private async deductOrderStock(
     tx: Prisma.TransactionClient,
     order: {
+      id: string;
       customerId: string;
       orderNumber: string;
       items: {
@@ -412,10 +413,17 @@ export class OrdersService {
         sessionId: order.customerId,
         productId: item.productId,
         type: 'PURCHASED' as const,
+        // Which order this purchase is — so cancelling it can take it back out.
+        metadata: { orderId: order.id },
       })),
     });
     await tx.customerJourneyEvent.create({
-      data: { userId: order.customerId, sessionId: order.customerId, stage: 'PURCHASED' },
+      data: {
+        userId: order.customerId,
+        sessionId: order.customerId,
+        stage: 'PURCHASED',
+        metadata: { orderId: order.id },
+      },
     });
   }
 
@@ -427,6 +435,7 @@ export class OrdersService {
   private async returnOrderStock(
     tx: Prisma.TransactionClient,
     order: {
+      id: string;
       orderNumber: string;
       items: {
         productId: string;
@@ -454,6 +463,13 @@ export class OrdersService {
         reason,
         adjustedById: actingUserId,
       })),
+    });
+    // A cancelled order is not a purchase: take it out of the tile and funnel
+    // "purchased" counts too, the same way its revenue leaves the sales figures.
+    const thisOrder = { path: ['orderId'], equals: order.id };
+    await tx.tileEvent.deleteMany({ where: { type: 'PURCHASED', metadata: thisOrder } });
+    await tx.customerJourneyEvent.deleteMany({
+      where: { stage: 'PURCHASED', metadata: thisOrder },
     });
   }
 

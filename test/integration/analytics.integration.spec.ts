@@ -12,18 +12,14 @@ import { createActors, createProduct, makeOrders, prisma, type Actors } from './
  * analytics pages report is compared with the truth computed from the scenario.
  */
 /**
- * KNOWN MISMATCHES (measured, not yet fixed) are `it.failing`: they pass while
- * the bug exists and start failing the moment it is fixed — flip them to `it`
- * then.
- *  - ORDERS: `overview.totalOrders` counts every order (7); `sales.totalOrders`
- *    counts only shipped/delivered ones (2). `pendingOrders` mixes unpaid
- *    quotations with paid orders being prepared.
- *  - CUSTOMERS: "repeat" counts customers with two non-cancelled orders even if
- *    unpaid or waitlisted (2, truth 1).
- *  - TILES: a sale that was paid and then cancelled still counts as purchased (4, truth 3).
- *  - FUNNEL: the browser records early steps under a per-browser session id,
- *    the server records order steps under the customer id, so one person is
- *    counted twice (4, truth 3); a cancelled purchase still reaches PURCHASED (2, truth 1).
+ * Rules these tests pin (each was a measured mismatch before it was fixed):
+ *  - revenue is money whose payment was verified and not cancelled afterwards —
+ *    shipping or delivery has nothing to do with it;
+ *  - "total orders" means orders placed, on both dashboards; "pending" means
+ *    unpaid, and paid-but-unshipped orders are counted separately;
+ *  - a repeat customer paid at least twice;
+ *  - a cancelled order is not a purchase, in the tile counts or the funnel;
+ *  - a person is one customer in the funnel, whatever browser session ids they used.
  */
 describe('analytics figures match the scenario that produced them', () => {
   const redisClient = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
@@ -91,6 +87,11 @@ describe('analytics figures match the scenario that produced them', () => {
   };
 
   beforeAll(async () => {
+    // Every figure is a whole-system total, so start from an empty ledger — the other
+    // suites share this schema and would otherwise add their own orders and events.
+    await prisma.tileEvent.deleteMany();
+    await prisma.customerJourneyEvent.deleteMany();
+    await prisma.order.deleteMany();
     actors = await createActors();
     for (let n = 0; n < 3; n++) {
       const user = await prisma.user.create({
@@ -155,12 +156,15 @@ describe('analytics figures match the scenario that produced them', () => {
   it('SALES: money figures', async () => {
     const overview = await analytics.overview(AnalyticsPeriod.MONTHLY);
     const sales = await analytics.sales(AnalyticsPeriod.MONTHLY);
-    // truth: 500 delivered; 700 actually received from customers who did not cancel (400+100+200)
+    // truth: 700 received from paid orders that were not cancelled (400 + 100 delivered, 200 being
+    // prepared) — the 100 paid-then-cancelled and the unpaid orders do not count
     expect(overview.totalSales).toBe(sales.totalSales); // the two dashboards must agree for the same period
-    expect(sales.totalSales).toBe(500);
+    expect(sales.totalSales).toBe(700);
+    expect(sales.paidOrders).toBe(3);
+    expect(sales.averageOrderValue).toBeCloseTo(700 / 3);
   });
 
-  it.failing('ORDERS: counts', async () => {
+  it('ORDERS: counts', async () => {
     const overview = await analytics.overview(AnalyticsPeriod.MONTHLY);
     const sales = await analytics.sales(AnalyticsPeriod.MONTHLY);
 
@@ -168,29 +172,28 @@ describe('analytics figures match the scenario that produced them', () => {
     expect(overview.totalOrders).toBe(sales.totalOrders);
     // unpaid quotations and paid orders being prepared are different piles
     expect(overview.pendingOrders).toBe(2); // truth: unpaid PENDING orders only
+    expect(overview.pendingFulfillments).toBe(1); // paid, being prepared
+    expect(sales.totalOrders).toBe(7);
   });
 
-  it.failing('CUSTOMERS: repeat purchase rate counts customers with 2+ PAID orders', async () => {
+  it('CUSTOMERS: repeat purchase rate counts customers with 2+ PAID orders', async () => {
     const overview = await analytics.overview(AnalyticsPeriod.MONTHLY);
     expect(overview.repeatCustomers).toBe(1);
   });
 
-  it.failing('TILES: "purchased" counts only sales that stood', async () => {
+  it('TILES: "purchased" counts only sales that stood', async () => {
     const raw = await prisma.tileEvent.count({
       where: { productId: product.id, type: 'PURCHASED' },
     });
     expect(raw).toBe(3);
   });
 
-  it.failing(
-    'FUNNEL: a person is one customer, and a cancelled purchase is not a purchase',
-    async () => {
-      const funnel = await analytics.conversionFunnel();
-      const at = (stage: string) => funnel.find((row) => row.stage === stage)?.customers;
+  it('FUNNEL: a person is one customer, and a cancelled purchase is not a purchase', async () => {
+    const funnel = await analytics.conversionFunnel();
+    const at = (stage: string) => funnel.find((row) => row.stage === stage)?.customers;
 
-      // 3 real people took part; customer 0 must not be counted once per session id
-      expect(at('OPENED_SYSTEM')).toBe(3);
-      expect(at('PURCHASED')).toBe(1);
-    },
-  );
+    // 3 real people took part; customer 0 must not be counted once per session id
+    expect(at('OPENED_SYSTEM')).toBe(3);
+    expect(at('PURCHASED')).toBe(1);
+  });
 });
