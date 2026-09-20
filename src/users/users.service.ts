@@ -73,19 +73,31 @@ export class UsersService {
    * attributable, so the account is switched off and every session revoked.
    */
   async closeOwnAccount(id: string) {
-    await this.findById(id);
-    const [user] = await this.prisma.$transaction([
-      this.prisma.user.update({
+    const account = await this.findById(id);
+    return this.prisma.$transaction(async (tx) => {
+      if (account.role === Role.ADMIN) {
+        // Lock every active admin row first, so two admins closing their accounts at the
+        // same moment can't both see the other as "still there" and leave nobody.
+        const admins = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "User" WHERE role = 'ADMIN' AND status = 'ACTIVE' FOR UPDATE`;
+        if (!admins.some((admin) => admin.id !== id)) {
+          throw badRequest(
+            'users.lastAdmin',
+            'You are the only active admin. Make another admin first, then close this account.',
+          );
+        }
+      }
+      const user = await tx.user.update({
         where: { id },
         data: { status: UserStatus.INACTIVE },
         select: SAFE_USER_SELECT,
-      }),
-      this.prisma.refreshToken.updateMany({
+      });
+      await tx.refreshToken.updateMany({
         where: { userId: id, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-    ]);
-    return user;
+      });
+      return user;
+    });
   }
 
   async listStaff(query: QueryStaffDto) {
