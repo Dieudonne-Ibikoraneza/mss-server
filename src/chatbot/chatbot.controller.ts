@@ -136,14 +136,19 @@ export class ChatbotController {
     return this.chatbotService.generateImagePreview(dto, userId);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Record customer feedback on one recommendation (like/dislike)',
-    description: 'Anonymous-safe; sets ACCEPTED, REJECTED, or clears back to PENDING.',
+    summary: 'Record customer feedback on one of your recommendations (like/dislike)',
+    description:
+      'Only the customer the recommendation was made for; sets ACCEPTED, REJECTED, or clears back to PENDING.',
   })
   @Patch('recommendations/:id')
-  setRecommendationDecision(@Param('id') id: string, @Body() dto: RecommendationDecisionDto) {
-    return this.chatbotService.setRecommendationDecision(id, dto.decision);
+  setRecommendationDecision(
+    @Param('id') id: string,
+    @Body() dto: RecommendationDecisionDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.chatbotService.setRecommendationDecision(id, dto.decision, userId);
   }
 
   @Public()

@@ -44,12 +44,15 @@ describe('quotation PDF uses the recorded unit price and the billed area', () =>
             {
               requiredAreaSqm: 3.1,
               totalPieces: 13,
+              purchasedAreaSqm: 3.25,
               unitPrice: 88.5,
               totalPrice: 287.63,
               product: {
                 name: 'Tile',
                 suitableFor: 'FLOOR',
-                boxCoverageSqm: 1,
+                // The product's box size was edited after checkout (0.25 → 0.5 m² a piece):
+                // the order still bills what it was placed for, 13 × 0.25 m².
+                boxCoverageSqm: 2,
                 piecesPerBox: 4,
                 collection: { size: '50×50cm' },
               },
@@ -138,7 +141,12 @@ describe('inactive products cannot be ordered', () => {
       quotationStatus: QuotationStatus.AWAITING_REVIEW,
       reservationExpiresAt: new Date(),
       updatedAt: new Date(),
-      items: items.map((item) => ({ ...item, totalPieces: 16, product: product() })),
+      items: items.map((item) => ({
+        ...item,
+        totalPieces: 16,
+        purchasedAreaSqm: 4,
+        product: product(),
+      })),
     });
 
     it('refuses to add a deactivated product', async () => {

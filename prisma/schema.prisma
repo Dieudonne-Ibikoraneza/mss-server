@@ -455,6 +455,10 @@ model OrderItem {
   productId        String
   product          Product @relation(fields: [productId], references: [id])
   requiredAreaSqm  Decimal @db.Decimal(10, 4)
+  /// The area this line actually ships, fixed at checkout from the packaging of that moment —
+  /// editing a product's box size later must not change what an existing order reserves,
+  /// deducts, returns or bills.
+  purchasedAreaSqm Decimal @db.Decimal(14, 6)
   boxes            Int
   additionalPieces Int
   totalPieces      Int

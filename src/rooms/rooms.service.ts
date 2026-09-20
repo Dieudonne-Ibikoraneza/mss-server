@@ -15,7 +15,8 @@ import { decodeCursor, encodeCursor } from '@/common/utils/cursor';
 const DESIGN_INCLUDE = {
   tiles: { include: { product: { include: { collection: true } } } },
   room: true,
-  user: true,
+  // Only what staff need to contact the owner — never the whole account record.
+  user: { select: { id: true, fullName: true, email: true, phone: true } },
 } satisfies Prisma.RoomDesignInclude;
 
 type DesignWithRelations = Prisma.RoomDesignGetPayload<{ include: typeof DESIGN_INCLUDE }>;
@@ -199,7 +200,10 @@ export class RoomsService {
       include: DESIGN_INCLUDE,
     });
     if (!design) throw notFound('rooms.designNotFound', 'Design not found.');
-    if (!isStaff && design.userId !== actingUserId && !design.sharedWithSales) {
+    // The owner sees their own designs. Staff see a design only once its owner has shared it
+    // with sales — a private design stays private, and one customer never reads another's.
+    const allowed = design.userId === actingUserId || (isStaff && design.sharedWithSales);
+    if (!allowed) {
       throw forbidden('rooms.designNoAccess', 'You do not have access to this design.');
     }
     return this.withSerializedTiles(design);

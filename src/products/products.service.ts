@@ -367,13 +367,11 @@ export class ProductsService {
   }
 
   async adjustStock(productId: string, dto: AdjustStockDto, adjustedById: string) {
-    const product = await this.prisma.product.findUnique({ where: { id: productId } });
-    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
-
-    const nextQuantity = new Prisma.Decimal(product.quantityOnHandSqm).add(dto.changeAreaSqm);
-    if (nextQuantity.isNegative()) {
-      throw badRequest('products.negativeStock', 'Adjustment would result in negative stock.');
-    }
+    const exists = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true },
+    });
+    if (!exists) throw notFound('catalog.productNotFound', 'Product not found.');
 
     if (dto.costPrice !== undefined && dto.changeAreaSqm <= 0) {
       throw badRequest(
@@ -385,38 +383,55 @@ export class ProductsService {
     const type =
       dto.type ?? (dto.changeAreaSqm >= 0 ? StockMovementType.INBOUND : StockMovementType.OUTBOUND);
 
-    // Moving weighted-average cost — only recomputed when this batch's cost
-    // is known; otherwise the average carries forward unchanged. Both sides
-    // are already per-m², so no box/piece conversion is needed here anymore.
-    let averageCostPrice = product.averageCostPrice;
-    if (dto.costPrice !== undefined) {
-      const costPerSqm = new Prisma.Decimal(dto.costPrice);
-      const oldTotalCost = new Prisma.Decimal(product.averageCostPrice).mul(
-        product.quantityOnHandSqm,
-      );
-      const incomingTotalCost = costPerSqm.mul(dto.changeAreaSqm);
-      // nextQuantity is guaranteed > 0 here: changeAreaSqm > 0 (checked above) and quantityOnHandSqm >= 0.
-      averageCostPrice = oldTotalCost.add(incomingTotalCost).div(nextQuantity);
-    }
+    // Read, compute and write under one row lock: two adjustments at the same moment used to
+    // both start from the same quantity, so both landed in the ledger while only one reached
+    // the stock (and the average cost was computed from the wrong base). Now the second waits
+    // for the first and works from what it left.
+    const updated = await this.prisma.$transaction(
+      async (tx) => {
+        const [current] = await tx.$queryRaw<
+          { quantityOnHandSqm: Prisma.Decimal; averageCostPrice: Prisma.Decimal }[]
+        >`SELECT "quantityOnHandSqm", "averageCostPrice" FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+        if (!current) throw notFound('catalog.productNotFound', 'Product not found.');
 
-    const [updated] = await this.prisma.$transaction([
-      this.prisma.product.update({
-        where: { id: productId },
-        data: { quantityOnHandSqm: nextQuantity, averageCostPrice },
-      }),
-      this.prisma.stockAdjustment.create({
-        data: {
-          productId,
-          changeAreaSqm: dto.changeAreaSqm,
-          type,
-          reference: dto.reference,
-          reason: dto.reason,
-          adjustedById,
-          costPrice: dto.costPrice,
-          averageCostAfter: averageCostPrice,
-        },
-      }),
-    ]);
+        const nextQuantity = new Prisma.Decimal(current.quantityOnHandSqm).add(dto.changeAreaSqm);
+        if (nextQuantity.isNegative()) {
+          throw badRequest('products.negativeStock', 'Adjustment would result in negative stock.');
+        }
+
+        // Moving weighted-average cost — only recomputed when this batch's cost
+        // is known; otherwise the average carries forward unchanged. Both sides
+        // are already per-m², so no box/piece conversion is needed here anymore.
+        let averageCostPrice = new Prisma.Decimal(current.averageCostPrice);
+        if (dto.costPrice !== undefined) {
+          const costPerSqm = new Prisma.Decimal(dto.costPrice);
+          const oldTotalCost = averageCostPrice.mul(current.quantityOnHandSqm);
+          const incomingTotalCost = costPerSqm.mul(dto.changeAreaSqm);
+          // nextQuantity is > 0 here: changeAreaSqm > 0 (checked above) and the quantity on hand is >= 0.
+          averageCostPrice = oldTotalCost.add(incomingTotalCost).div(nextQuantity);
+        }
+
+        const product = await tx.product.update({
+          where: { id: productId },
+          data: { quantityOnHandSqm: nextQuantity, averageCostPrice },
+        });
+        await tx.stockAdjustment.create({
+          data: {
+            productId,
+            changeAreaSqm: dto.changeAreaSqm,
+            type,
+            reference: dto.reference,
+            reason: dto.reason,
+            adjustedById,
+            costPrice: dto.costPrice,
+            averageCostAfter: averageCostPrice,
+          },
+        });
+        return product;
+      },
+      // Adjustments to one product queue behind its row lock — allow for a short queue.
+      { maxWait: 15_000, timeout: 30_000 },
+    );
 
     await invalidateProductsCache(this.redis, [productId]);
     await this.notifications.notifyLowStock([productId]);

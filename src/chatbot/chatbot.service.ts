@@ -440,23 +440,24 @@ export class ChatbotService {
     }
   }
 
-  /** Customer feedback on one recommendation — liked, disliked, or cleared back to pending. */
-  async setRecommendationDecision(id: string, decision: RecommendationDecision) {
-    await this.findRecommendation(id);
+  /**
+   * Customer feedback on one recommendation — liked, disliked, or cleared back to pending.
+   * Only the customer it was made for may change it; anyone else (or a made-up id) gets the
+   * same "not found", so ids can't be probed and analytics can't be skewed from outside.
+   */
+  async setRecommendationDecision(id: string, decision: RecommendationDecision, userId: string) {
+    const recommendation = await this.prisma.recommendation.findUnique({ where: { id } });
+    if (!recommendation || recommendation.userId !== userId) {
+      throw notFound('chatbot.recommendationNotFound', 'Recommendation not found.');
+    }
     return this.prisma.recommendation.update({
       where: { id },
       data: {
         decision,
         decidedAt: decision === RecommendationDecision.PENDING ? null : new Date(),
       },
+      select: { id: true, decision: true },
     });
-  }
-
-  private async findRecommendation(id: string) {
-    const recommendation = await this.prisma.recommendation.findUnique({ where: { id } });
-    if (!recommendation)
-      throw notFound('chatbot.recommendationNotFound', 'Recommendation not found.');
-    return recommendation;
   }
 
   /**

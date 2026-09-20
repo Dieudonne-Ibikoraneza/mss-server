@@ -88,7 +88,10 @@ export class RoomsController {
   }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get a room design by id', description: 'Owner or staff only.' })
+  @ApiOperation({
+    summary: 'Get a room design by id',
+    description: 'The owner, or staff when the owner has shared it with sales.',
+  })
   @Get('designs/:id')
   findDesign(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.roomsService.findDesign(id, user.id, STAFF_ROLES.includes(user.role));

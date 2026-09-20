@@ -124,18 +124,12 @@ const shortagesForCustomer = (
   }));
 
 /**
- * The actual area an order line ships, once its `totalPieces` (rounded up to
- * whole pieces at checkout) is converted back to m² via the product's own
- * packaging — what actually leaves stock, not the raw `requiredAreaSqm` the
- * customer typed.
+ * The actual area an order line ships — its whole pieces converted to m² by the
+ * packaging *at checkout*, stored on the line. It is deliberately not recomputed
+ * from the product, whose box size can be edited afterwards.
  */
-const purchasedAreaOf = (item: {
-  totalPieces: number;
-  product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
-}) => {
-  const tileAreaSqm = Number(item.product.boxCoverageSqm) / item.product.piecesPerBox;
-  return item.totalPieces * tileAreaSqm;
-};
+const purchasedAreaOf = (item: { purchasedAreaSqm: Prisma.Decimal | number }) =>
+  Number(item.purchasedAreaSqm);
 
 /** A unique-constraint failure on the checkout key: two requests with the same key raced, one won. */
 function isCheckoutKeyClash(error: unknown): boolean {
@@ -355,8 +349,7 @@ export class OrdersService {
     tx: Prisma.TransactionClient,
     items: {
       productId: string;
-      totalPieces: number;
-      product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+      purchasedAreaSqm: Prisma.Decimal | number;
     }[],
   ) {
     await this.bulkAdjustProductArea(
@@ -383,8 +376,7 @@ export class OrdersService {
       orderNumber: string;
       items: {
         productId: string;
-        totalPieces: number;
-        product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+        purchasedAreaSqm: Prisma.Decimal | number;
       }[];
     },
     actingUserId: string,
@@ -439,8 +431,7 @@ export class OrdersService {
       orderNumber: string;
       items: {
         productId: string;
-        totalPieces: number;
-        product: { boxCoverageSqm: Prisma.Decimal | number; piecesPerBox: number };
+        purchasedAreaSqm: Prisma.Decimal | number;
       }[];
     },
     actingUserId: string,
@@ -917,6 +908,7 @@ export class OrdersService {
               requiredAreaSqm: line.quantity.requiredArea,
               boxes: line.quantity.completeBoxes,
               additionalPieces: line.quantity.remainingPieces,
+              purchasedAreaSqm: line.quantity.purchasedArea,
               totalPieces: line.quantity.totalPieces,
               unitPrice: line.unitPrice,
               totalPrice: line.totalPrice,
@@ -1406,6 +1398,7 @@ export class OrdersService {
                 requiredAreaSqm: item.quantity.requiredArea,
                 boxes: item.quantity.completeBoxes,
                 additionalPieces: item.quantity.remainingPieces,
+                purchasedAreaSqm: item.quantity.purchasedArea,
                 totalPieces: item.quantity.totalPieces,
                 unitPrice: item.unitPrice,
                 totalPrice: item.totalPrice,
