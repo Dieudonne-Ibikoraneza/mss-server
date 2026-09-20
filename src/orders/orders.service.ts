@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
@@ -135,6 +136,45 @@ const purchasedAreaOf = (item: {
   return item.totalPieces * tileAreaSqm;
 };
 
+/** A unique-constraint failure on `Order.orderNumber`. */
+function isOrderNumberClash(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+  const target = error.meta?.target;
+  return Array.isArray(target)
+    ? target.includes('orderNumber')
+    : target === 'Order_orderNumber_key';
+}
+
+/**
+ * Every requested product must exist and still be on sale. `alreadyOrdered`
+ * lets a revision keep a line for a product that was deactivated after the
+ * order was placed — it is a commitment already made — while still refusing to
+ * add one. The public catalogue hides inactive products, so a stale cart or a
+ * direct request is the only way to ask for one.
+ */
+function assertProductsOrderable(
+  requestedIds: readonly string[],
+  products: readonly { id: string; name: string; isActive: boolean }[],
+  alreadyOrdered: ReadonlySet<string> = new Set(),
+) {
+  if (products.length !== requestedIds.length) {
+    throw new BadRequestException('One or more products could not be found.');
+  }
+  const unavailable = products.filter(
+    (product) => !product.isActive && !alreadyOrdered.has(product.id),
+  );
+  if (unavailable.length > 0) {
+    const names = unavailable.map((product) => `"${product.name}"`).join(', ');
+    throw new BadRequestException(
+      unavailable.length === 1
+        ? `${names} is no longer available. Remove it and try again.`
+        : `${names} are no longer available. Remove them and try again.`,
+    );
+  }
+}
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -208,8 +248,17 @@ export class OrdersService {
     return { ...sanitized, items };
   }
 
+  /**
+   * `ORD-<time>-<random>`: the millisecond timestamp keeps numbers roughly
+   * sortable, the random part keeps two orders created in the same millisecond
+   * apart. `create` still retries if the database reports a clash anyway.
+   */
   private generateOrderNumber() {
-    return `ORD-${Date.now().toString(36).toUpperCase()}`;
+    const random = randomInt(36 ** 4)
+      .toString(36)
+      .toUpperCase()
+      .padStart(4, '0');
+    return `ORD-${Date.now().toString(36).toUpperCase()}-${random}`;
   }
 
   private isStaff(role: Role) {
@@ -618,6 +667,11 @@ export class OrdersService {
       if (error instanceof InsufficientStockError) {
         throw new ConflictException('Stock changed while placing this order. Please try again.');
       }
+      // Two orders picked the same reference — nothing was created, so a fresh
+      // number on another attempt is all it takes.
+      if (isOrderNumberClash(error) && attempt < 5) {
+        return this.create(dto, actingUser, attempt + 1);
+      }
       throw error;
     }
   }
@@ -633,9 +687,10 @@ export class OrdersService {
       where: { id: { in: dto.items.map((item) => item.productId) } },
       include: { collection: true },
     });
-    if (products.length !== dto.items.length) {
-      throw new BadRequestException('One or more products could not be found.');
-    }
+    assertProductsOrderable(
+      dto.items.map((item) => item.productId),
+      products,
+    );
 
     const lineItems = dto.items.map((item) => {
       const product = products.find((p) => p.id === item.productId)!;
@@ -1108,9 +1163,11 @@ export class OrdersService {
       where: { id: { in: dto.items.map((item) => item.productId) } },
       include: { collection: true },
     });
-    if (products.length !== dto.items.length) {
-      throw new BadRequestException('One or more products could not be found.');
-    }
+    assertProductsOrderable(
+      dto.items.map((item) => item.productId),
+      products,
+      new Set(order.items.map((item) => item.productId)),
+    );
 
     const revisedItems = dto.items.map((item) => {
       const product = products.find((candidate) => candidate.id === item.productId)!;
@@ -1490,7 +1547,10 @@ export class OrdersService {
         productName: item.product.name,
         suitableFor: item.product.suitableFor,
         size: item.product.collection.size,
-        areaSqm: Number(item.requiredAreaSqm),
+        requestedAreaSqm: Number(item.requiredAreaSqm),
+        billedAreaSqm: purchasedAreaOf(item),
+        totalPieces: item.totalPieces,
+        unitPrice: Number(item.unitPrice),
         totalPrice: Number(item.totalPrice),
       })),
       subtotal: Number(full.subtotal),

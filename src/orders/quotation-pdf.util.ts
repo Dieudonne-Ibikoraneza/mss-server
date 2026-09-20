@@ -12,7 +12,13 @@ export interface QuotationPdfInput {
     productName: string;
     suitableFor: SuitableFor;
     size: string;
-    areaSqm: number;
+    /** What the customer asked for. */
+    requestedAreaSqm: number;
+    /** What is actually supplied and billed — the request rounded up to whole pieces. */
+    billedAreaSqm: number;
+    totalPieces: number;
+    /** The price per m² recorded on the order line — never derived from the total. */
+    unitPrice: number;
     totalPrice: number;
   }>;
   subtotal: number;
@@ -54,6 +60,10 @@ const SUITABLE_FOR_LABEL: Record<SuitableFor, string> = {
 
 const money = (value: number, currency: string) =>
   `${currency} ${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+
+/** Areas are held to 4 decimals; float noise from pieces × tile area must not reach the page. */
+const formatArea = (value: number) =>
+  Number(value.toFixed(4)).toLocaleString('en-US', { maximumFractionDigits: 4 });
 
 const LEFT = 46;
 const RIGHT = 549;
@@ -151,7 +161,6 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
     doc.moveDown(0.6);
 
     for (const item of order.items) {
-      const unitPricePerSqm = item.areaSqm > 0 ? item.totalPrice / item.areaSqm : 0;
       const y = doc.y;
       doc
         .fontSize(10.5)
@@ -165,16 +174,34 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
         .fillColor(GRAY_LABEL)
         .font('Helvetica')
         .text(`${SUITABLE_FOR_LABEL[item.suitableFor]} · ${item.size}`, col.item, doc.y);
+      // Tiles are supplied in whole pieces, so what is billed can be a little
+      // more than what was asked for — say so, so quantity × unit price adds up.
+      const supplied = `${item.totalPieces.toLocaleString('en-US')} pieces`;
+      doc
+        .fontSize(8.5)
+        .fillColor(GRAY_LABEL)
+        .text(
+          item.requestedAreaSqm === item.billedAreaSqm
+            ? supplied
+            : `Requested ${formatArea(item.requestedAreaSqm)} sqm · supplied as ${supplied}`,
+          col.item,
+          doc.y,
+          { width: col.qty - col.item - 12 },
+        );
+      // The figures on the right are placed at the row's top, which moves the
+      // cursor back up — remember where the tallest column (the item's lines)
+      // ends so the next row and the rule start below it.
+      const itemBottom = doc.y;
 
       doc
         .fontSize(10)
         .fillColor(NAVY)
         .font('Helvetica')
-        .text(`${item.areaSqm.toLocaleString('en-US')} sqm`, col.qty, y, {
+        .text(`${formatArea(item.billedAreaSqm)} sqm`, col.qty, y, {
           width: colWidth.qty,
           align: 'right',
         });
-      doc.text(money(unitPricePerSqm, order.currency), col.unit, y, {
+      doc.text(money(item.unitPrice, order.currency), col.unit, y, {
         width: colWidth.unit,
         align: 'right',
       });
@@ -186,6 +213,7 @@ export function renderQuotationPdf(order: QuotationPdfInput): Promise<Buffer> {
           align: 'right',
         });
 
+      doc.y = Math.max(doc.y, itemBottom);
       doc.moveDown(1.1);
     }
 

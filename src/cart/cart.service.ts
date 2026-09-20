@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { StorageService } from '@/storage/storage.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
@@ -113,6 +113,14 @@ export class CartService {
   }
 
   async upsertItem(userId: string, dto: UpsertCartItemDto) {
+    // Only products that are on sale can be put in a cart — the catalogue
+    // hides the rest, so this is a stale page or a direct request.
+    const product = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+      select: { isActive: true },
+    });
+    if (!product) throw new NotFoundException('Product not found.');
+    if (!product.isActive) throw new BadRequestException('This product is no longer available.');
     const cart = await this.getOrCreateCart(userId);
     return this.prisma.cartItem.upsert({
       where: { cartId_productId: { cartId: cart.id, productId: dto.productId } },
