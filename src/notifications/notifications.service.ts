@@ -13,6 +13,7 @@ export const EMAIL_TEMPLATE_KEYS = {
   LOW_STOCK_ALERT: 'LOW_STOCK_ALERT',
   QUOTATION_READY: 'QUOTATION_READY',
   PAYMENT_RECEIPT: 'PAYMENT_RECEIPT',
+  PAYMENT_REJECTED: 'PAYMENT_REJECTED',
   ORDER_RESERVATION_EXPIRED: 'ORDER_RESERVATION_EXPIRED',
   ORDER_WAITLISTED: 'ORDER_WAITLISTED',
   ORDER_WAITLIST_AVAILABLE: 'ORDER_WAITLIST_AVAILABLE',
@@ -288,6 +289,53 @@ export class NotificationsService implements OnModuleInit {
    * Best-effort, same reasoning as `notifyLowStock`: a mail failure must
    * never undo the quotation that was already sent.
    */
+  /**
+   * Tells the customer a payment they declared could not be confirmed, why, and
+   * that the order is still reserved for them — see `OrdersService#rejectPayment`.
+   * Best-effort like every other order email: a failure is logged, never thrown.
+   */
+  async sendPaymentRejectedEmail(
+    email: string,
+    fullName: string,
+    orderNumber: string,
+    orderId: string,
+    reason: string,
+    reservedMinutes: number,
+    language: Language = Language.EN,
+  ): Promise<void> {
+    try {
+      const template = await this.getTemplate(EMAIL_TEMPLATE_KEYS.PAYMENT_REJECTED, language);
+      if (!template) {
+        this.logger.warn(
+          `EmailTemplate "${EMAIL_TEMPLATE_KEYS.PAYMENT_REJECTED}" not found — skipping payment-rejected email. Run \`npm run prisma:seed\`.`,
+        );
+        return;
+      }
+
+      const orderUrl = `${this.config.get<string>('app.clientUrl')}/account/orders/${orderId}`;
+      const vars = { fullName, orderNumber, orderUrl, reason, minutes: String(reservedMinutes) };
+      // The reason is typed by staff — escaped in the HTML body like every other value.
+      const htmlVars = {
+        fullName: escapeHtml(fullName),
+        orderNumber: escapeHtml(orderNumber),
+        orderUrl,
+        reason: escapeHtml(reason),
+        minutes: String(reservedMinutes),
+      };
+      await this.sendEmail(
+        email,
+        renderTemplate(template.subject, vars),
+        renderTemplate(template.bodyText, vars),
+        renderTemplate(template.bodyHtml, htmlVars),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(
+        `Failed to send payment-rejected email for order ${orderNumber}: ${message}`,
+      );
+    }
+  }
+
   async sendQuotationReadyEmail(
     email: string,
     fullName: string,

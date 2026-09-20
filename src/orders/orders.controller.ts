@@ -9,6 +9,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
+import { RejectPaymentDto } from './dto/reject-payment.dto';
 import { SaveDeliveryDetailsDto } from './dto/save-delivery-details.dto';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
@@ -118,6 +119,21 @@ export class OrdersController {
   @Post(':id/quotation/payment-submitted')
   markPaymentSubmitted(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.markPaymentSubmitted(id, user);
+  }
+
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiOperation({
+    summary: 'Reject a submitted payment',
+    description:
+      'The payment could not be confirmed. The quotation returns to "sent", the customer’s payment window restarts, and they are told why (order thread and email).',
+  })
+  @Post(':id/quotation/reject-payment')
+  rejectPayment(
+    @Param('id') id: string,
+    @Body() dto: RejectPaymentDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.rejectPayment(id, dto, user);
   }
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)

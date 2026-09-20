@@ -12,7 +12,10 @@ if (!url || !/schema=it_/.test(url)) {
 export const prisma = new PrismaClient({ datasources: { db: { url } } });
 
 /** Emails and pushes are not what these tests are about — they are recorded, never sent. */
-export const sent = { reservationExpired: [] as string[] };
+export const sent = {
+  reservationExpired: [] as string[],
+  paymentRejected: [] as { to: string; orderNumber: string; reason: string; minutes: number }[],
+};
 
 /**
  * A prisma whose `order.findUnique` answers with a snapshot taken earlier — the
@@ -53,7 +56,19 @@ export const makeOrders = (options: { staleOrder?: unknown } = {}) => {
               sent.reservationExpired.push(orderNumber);
               return Promise.resolve();
             }
-          : () => Promise.resolve(),
+          : name === 'sendPaymentRejectedEmail'
+            ? (
+                to: string,
+                _name: string,
+                orderNumber: string,
+                _orderId: string,
+                reason: string,
+                minutes: number,
+              ) => {
+                sent.paymentRejected.push({ to, orderNumber, reason, minutes });
+                return Promise.resolve();
+              }
+            : () => Promise.resolve(),
     },
   );
   return new OrdersService(

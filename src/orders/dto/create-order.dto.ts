@@ -45,6 +45,15 @@ export class CreateOrderDto {
   notes?: string;
 
   /**
+   * Generated once per checkout attempt and re-sent on every retry of it. If the
+   * first request succeeded but its reply never arrived, the retry gets that
+   * same order back instead of creating a second one. Scoped per customer.
+   */
+  @IsOptional()
+  @IsUUID()
+  idempotencyKey?: string;
+
+  /**
    * Delivery details saved in the same transaction as the order — checkout
    * sends them here so it is one operation: an order can't exist without them
    * because a second request failed. Staff placing an order on a customer's

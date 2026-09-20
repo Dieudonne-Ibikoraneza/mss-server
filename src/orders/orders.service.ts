@@ -38,6 +38,7 @@ import {
   reserveAreaAtomically,
 } from './stock-reservation.util';
 import { canTransitionOrderStatus, ORDER_STATUS_TRANSITIONS } from './order-status-transitions';
+import { RejectPaymentDto } from './dto/reject-payment.dto';
 import { SendQuotationDto } from './dto/send-quotation.dto';
 import { CreateOrderMessageDto } from './dto/create-order-message.dto';
 import { UpdateOrderItemsDto } from './dto/update-order-items.dto';
@@ -139,6 +140,36 @@ const purchasedAreaOf = (item: {
   const tileAreaSqm = Number(item.product.boxCoverageSqm) / item.product.piecesPerBox;
   return item.totalPieces * tileAreaSqm;
 };
+
+/** A unique-constraint failure on the checkout key: two requests with the same key raced, one won. */
+function isCheckoutKeyClash(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+  const target = error.meta?.target;
+  return Array.isArray(target)
+    ? target.includes('clientRequestId')
+    : typeof target === 'string' && target.includes('clientRequestId');
+}
+
+/** Whether a retried checkout asks for the same products and areas as the order its key already made. */
+function sameOrderItems(
+  requested: readonly { productId: string; areaSqm: number }[],
+  existing: readonly { productId: string; requiredAreaSqm: Prisma.Decimal | number }[],
+): boolean {
+  if (requested.length !== existing.length) return false;
+  const remaining = [...existing];
+  for (const item of requested) {
+    const at = remaining.findIndex(
+      (row) =>
+        row.productId === item.productId &&
+        Math.abs(Number(row.requiredAreaSqm) - item.areaSqm) < 0.0001,
+    );
+    if (at === -1) return false;
+    remaining.splice(at, 1);
+  }
+  return true;
+}
 
 /** A unique-constraint failure on `Order.orderNumber`. */
 function isOrderNumberClash(error: unknown): boolean {
@@ -675,8 +706,42 @@ export class OrdersService {
       if (isOrderNumberClash(error) && attempt < 5) {
         return this.create(dto, actingUser, attempt + 1);
       }
+      // Two requests with the same checkout key raced and the other one won —
+      // on the next pass this one finds that order and returns it.
+      if (isCheckoutKeyClash(error) && attempt < 3) {
+        return this.create(dto, actingUser, attempt + 1);
+      }
       throw error;
     }
+  }
+
+  /**
+   * The order an earlier request with this checkout key already created for
+   * this customer, in the same shape `create` answers with — or null if none
+   * exists yet. A key reused for a *different* cart is refused rather than
+   * silently answered with the wrong order.
+   */
+  private async findCheckoutReplay(customerId: string, dto: CreateOrderDto, isStaff: boolean) {
+    const existing = await this.prisma.order.findFirst({
+      where: { customerId, clientRequestId: dto.idempotencyKey },
+      include: { items: true },
+    });
+    if (!existing) return null;
+    if (!sameOrderItems(dto.items, existing.items)) {
+      throw new ConflictException(
+        'This checkout was already used for a different cart. Reload your cart and place the order again.',
+      );
+    }
+    // The shortages the original response carried live on the order's own system message.
+    const note = await this.prisma.orderMessage.findFirst({
+      where: { orderId: existing.id, author: OrderMessageAuthor.SYSTEM },
+      orderBy: { createdAt: 'asc' },
+    });
+    const stored = (note?.metadata as { shortages?: StockShortage[] } | null)?.shortages ?? [];
+    return {
+      orderCreated: true as const,
+      order: { ...existing, shortages: isStaff ? stored : shortagesForCustomer(stored) },
+    };
   }
 
   private async createOnce(dto: CreateOrderDto, actingUser: AuthenticatedUser) {
@@ -685,6 +750,13 @@ export class OrdersService {
       throw new ForbiddenException('Only staff can place an order on behalf of another customer.');
     }
     const customerId = dto.customerId ?? actingUser.id;
+
+    // A retry of a checkout that already produced an order — its first reply
+    // was lost, or the customer double-submitted — gets that order back.
+    if (dto.idempotencyKey) {
+      const replay = await this.findCheckoutReplay(customerId, dto, isStaff);
+      if (replay) return replay;
+    }
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: dto.items.map((item) => item.productId) } },
@@ -846,6 +918,7 @@ export class OrdersService {
           notes: dto.notes,
           quotationStatus: QuotationStatus.AWAITING_REVIEW,
           reservationExpiresAt,
+          clientRequestId: dto.idempotencyKey,
           delivery: dto.delivery ? { create: dto.delivery } : undefined,
           items: {
             create: lineItems.map((line) => ({
@@ -1614,6 +1687,91 @@ export class OrdersService {
         'This order changed before your payment could be recorded. Refresh and check its status.',
       );
     }
+    return this.prisma.order.findUniqueOrThrow({ where: { id } });
+  }
+
+  /**
+   * Staff could not confirm the payment the customer declared (wrong amount,
+   * nothing received, …). The quotation goes back to "sent" so the customer can
+   * pay properly and declare it again, their payment window restarts (a hold
+   * that lapsed while staff were checking must not cancel the order the moment
+   * it is reopened), and they are told why — in the order thread and by email.
+   *
+   * A single-winner transition like `verifyPayment`: rejecting and verifying at
+   * the same moment leaves one outcome, never both.
+   */
+  async rejectPayment(id: string, dto: RejectPaymentDto, actingUser: AuthenticatedUser) {
+    this.assertCanManageQuotation(actingUser);
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { customer: true },
+    });
+    if (!order) throw new NotFoundException('Order not found.');
+    this.assertNotCancelled(order);
+    if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
+      throw new BadRequestException('This order has no submitted payment to reject.');
+    }
+
+    const reason = dto.reason.trim();
+    const holdsStock = order.status === OrderStatus.PENDING && order.reservationExpiresAt !== null;
+    const reservedMinutes = Math.round(this.reservationWindowMs() / 60_000);
+
+    const message = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: {
+          id,
+          quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
+          status: { not: OrderStatus.CANCELLED },
+          reservationExpiresAt: order.reservationExpiresAt,
+        },
+        data: {
+          quotationStatus: QuotationStatus.QUOTATION_SENT,
+          paymentSubmittedAt: null,
+          reservationExpiresAt: holdsStock
+            ? new Date(Date.now() + this.reservationWindowMs())
+            : undefined,
+        },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'This payment was already verified or rejected, or the order changed in the meantime. Refresh and check its status.',
+        );
+      }
+      await tx.orderStatusEvent.create({
+        data: {
+          orderId: id,
+          status: order.status,
+          note: `Payment not confirmed — ${reason}`,
+          createdById: actingUser.id,
+        },
+      });
+      // What the customer reads in the order thread.
+      return tx.orderMessage.create({
+        data: {
+          orderId: id,
+          author: OrderMessageAuthor.STAFF,
+          senderId: actingUser.id,
+          body: `Payment not confirmed: ${reason}`,
+        },
+        include: { sender: { select: { id: true, fullName: true, role: true } } },
+      });
+    });
+
+    await this.bestEffort(`socket push for rejected payment on order ${id}`, () =>
+      this.negotiations.emitMessage('order', id, message),
+    );
+    if (order.customer.email) {
+      await this.notifications.sendPaymentRejectedEmail(
+        order.customer.email,
+        order.customer.fullName,
+        order.orderNumber,
+        order.id,
+        reason,
+        reservedMinutes,
+        order.customer.language,
+      );
+    }
+
     return this.prisma.order.findUniqueOrThrow({ where: { id } });
   }
 
