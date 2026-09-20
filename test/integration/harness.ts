@@ -46,7 +46,7 @@ const withStaleOrderRead = (snapshot: unknown) => {
 };
 
 /** A fresh service instance — several of them stand in for several server processes. */
-export const makeOrders = (options: { staleOrder?: unknown } = {}) => {
+export const makeOrders = (options: { staleOrder?: unknown; events?: unknown } = {}) => {
   const notifications = new Proxy(
     {},
     {
@@ -75,7 +75,7 @@ export const makeOrders = (options: { staleOrder?: unknown } = {}) => {
     (options.staleOrder === undefined ? prisma : withStaleOrderRead(options.staleOrder)) as never,
     { delByPrefix: () => Promise.resolve() } as never,
     { get: () => 60 } as never,
-    { recordJourneyEvent: () => Promise.resolve() } as never,
+    (options.events ?? { recordJourneyEvent: () => Promise.resolve() }) as never,
     notifications as never,
     { emitMessage: () => undefined } as never,
     {} as never,
