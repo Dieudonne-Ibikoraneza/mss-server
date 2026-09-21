@@ -197,4 +197,43 @@ describe('analytics figures match the scenario that produced them', () => {
     expect(at('OPENED_SYSTEM')).toBe(3);
     expect(at('PURCHASED')).toBe(1);
   });
+
+  it('OPENED_SYSTEM is recorded once per customer for good, not once a day', async () => {
+    const user = await prisma.user.create({
+      data: {
+        fullName: 'IT Returning Visitor',
+        email: `it-returning-${Date.now().toString(36)}@example.test`,
+        role: Role.CLIENT,
+      },
+    });
+    const open = (sessionId: string) =>
+      events.recordPublicJourneyEvent({
+        userId: user.id,
+        sessionId,
+        stage: 'OPENED_SYSTEM',
+        role: Role.CLIENT,
+      });
+    const rowsOnRecord = () =>
+      prisma.customerJourneyEvent.count({ where: { userId: user.id, stage: 'OPENED_SYSTEM' } });
+
+    await open('session-day-1');
+    await open('session-day-1');
+    expect(await rowsOnRecord()).toBe(1);
+
+    // The next day: the 24h Redis window has lapsed (and is gone entirely after a
+    // cache flush), on a different browser session — still not a second entry.
+    await redisClient.del(`events:dedup:journey:${user.id}:OPENED_SYSTEM`);
+    await open('session-day-2');
+    expect(await rowsOnRecord()).toBe(1);
+
+    // Staff never count, as before.
+    expect(
+      await events.recordPublicJourneyEvent({
+        userId: actors.staff.id,
+        sessionId: 'staff-session',
+        stage: 'OPENED_SYSTEM',
+        role: Role.ADMIN,
+      }),
+    ).toBeNull();
+  });
 });

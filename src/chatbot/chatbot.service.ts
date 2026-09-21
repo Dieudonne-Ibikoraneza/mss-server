@@ -60,6 +60,7 @@ type RoomTilePreviewAttachment = {
 const MAX_CANDIDATE_PRODUCTS = 40;
 /** Length cap for the auto-derived "project" title shown in the customer's conversation list. */
 const MAX_TITLE_CHARS = 80;
+const DEFAULT_PROJECT_TITLE = 'New Project';
 
 @Injectable()
 export class ChatbotService {
@@ -101,7 +102,21 @@ export class ChatbotService {
    * existing conversation's history or recommendations. */
   startConversation(userId: string, dto: StartConversationDto) {
     return this.prisma.chatConversation.create({
-      data: { userId, sessionId: randomUUID(), language: dto.language ?? Language.EN },
+      data: {
+        userId,
+        sessionId: randomUUID(),
+        language: dto.language ?? Language.EN,
+        title: DEFAULT_PROJECT_TITLE,
+      },
+    });
+  }
+
+  /** Renames one project after verifying it belongs to the signed-in user. */
+  async renameConversation(conversationId: string, userId: string, title: string) {
+    await this.resolveOwnedConversation(conversationId, userId);
+    return this.prisma.chatConversation.update({
+      where: { id: conversationId },
+      data: { title: title.trim() },
     });
   }
 

@@ -30,6 +30,7 @@ import {
   RecommendationDecisionDto,
 } from './dto/recommendation-decision.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
+import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
 
 const ROOM_PHOTO_MAX_SIZE = 15 * 1024 * 1024;
@@ -67,6 +68,17 @@ export class ChatbotController {
   @Get('conversations')
   listConversations(@CurrentUser('id') userId: string) {
     return this.chatbotService.listConversations(userId);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Rename one conversation (owner only)' })
+  @Patch('conversations/:id')
+  renameConversation(
+    @Param('id') id: string,
+    @Body() dto: RenameConversationDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.chatbotService.renameConversation(id, userId, dto.title);
   }
 
   @ApiBearerAuth()

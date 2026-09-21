@@ -676,8 +676,7 @@ model ChatConversation {
   user      User?    @relation(fields: [userId], references: [id])
   sessionId String
   language  Language @default(EN)
-  /// Short label for the customer's "project" list (e.g. "Living room, Nyamata") —
-  /// set from their first message once the conversation actually starts.
+  /// User-editable label for the customer's project list.
   title     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

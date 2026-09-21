@@ -124,6 +124,19 @@ export class EventsService {
     }
     this.assertMetadataSize(input.metadata);
 
+    // Opening the system is a once-in-a-lifetime fact about a customer, not a
+    // per-day one: a signed-in customer who already has it on record never
+    // gets a second row, however much later they come back. Checked against
+    // the table itself (not the 24h Redis key below, which would let a
+    // returning customer through again the next day, or after a cache flush).
+    if (input.stage === JourneyStage.OPENED_SYSTEM && input.userId) {
+      const alreadyRecorded = await this.prisma.customerJourneyEvent.findFirst({
+        where: { userId: input.userId, stage: JourneyStage.OPENED_SYSTEM },
+        select: { id: true },
+      });
+      if (alreadyRecorded) return null;
+    }
+
     const identity = input.userId ?? input.sessionId;
     const dedupKey = `events:dedup:journey:${identity}:${input.stage}`;
     const accepted = await this.redis.setIfAbsent(dedupKey, '1', 24 * 60 * 60);
