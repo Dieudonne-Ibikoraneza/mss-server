@@ -5,3 +5,6 @@ coverage
 .env.*.local
 *.log
 .DS_Store
+
+# incremental TypeScript build cache — machine-local; committing it makes clean builds (Docker/CI) skip emitting JS
+*.tsbuildinfo
