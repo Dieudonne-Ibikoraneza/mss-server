@@ -58,6 +58,28 @@ export function validateSettingValue(key: SettingKey, value: unknown): string | 
   if (key === 'support.email' && text !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
     fail(key, 'settings.invalidEmail', 'must be a valid email address.');
   }
+  // Both are rendered as links (tel: / wa.me), so they must be real numbers with a country code.
+  // Empty is allowed: the channel is then simply left off the customer's support dialog.
+  if ((key === 'support.phone' || key === 'support.whatsapp') && text !== '') {
+    const compact = text.replace(/[\s-]/g, '');
+    const rwandan = /^\+2507\d{8}$/.test(compact);
+    if (rwandan) {
+      // Stored in one tidy format, however it was typed.
+      return `+250 ${compact.slice(4, 7)} ${compact.slice(7, 10)} ${compact.slice(10)}`;
+    }
+    // The support phone line is Rwandan only; WhatsApp may be any international number.
+    if (key === 'support.phone') {
+      fail(key, 'settings.invalidPhone', 'must be a Rwandan phone number, e.g. +250 788 300 400.');
+    }
+    if (!/^\+[1-9]\d{7,14}$/.test(compact)) {
+      fail(
+        key,
+        'settings.invalidWhatsapp',
+        'must be an international number starting with +, e.g. +250 788 300 400.',
+      );
+    }
+    return text;
+  }
   if (
     key === 'payment.bankSwift' &&
     text !== '' &&
