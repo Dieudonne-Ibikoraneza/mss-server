@@ -12,8 +12,8 @@ export async function invalidateProductsCache(
 ): Promise<void> {
   await bestEffort('clear the product cache', () =>
     Promise.all([
-      redis.delByPrefix(PRODUCTS_LIST_CACHE_PREFIX),
-      ...productIds.map((id) => redis.delByPrefix(productDetailCachePrefix(id))),
+      redis.cacheDelByPrefix(PRODUCTS_LIST_CACHE_PREFIX),
+      ...productIds.map((id) => redis.cacheDelByPrefix(productDetailCachePrefix(id))),
     ]),
   );
 }

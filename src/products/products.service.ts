@@ -152,7 +152,7 @@ export class ProductsService {
       `page=${query.page}:limit=${query.limit}:collectionId=${query.collectionId ?? ''}:` +
       `size=${query.size ?? ''}:suitableFor=${query.suitableFor ?? ''}:` +
       `roomType=${query.roomType ?? ''}:search=${query.search ?? ''}:sort=${query.sort ?? ''}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.redis.cacheGet(cacheKey);
     if (cached) return cached;
 
     const where: Prisma.ProductWhereInput = {
@@ -182,13 +182,13 @@ export class ProductsService {
       query.page,
       query.limit,
     );
-    await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
+    await this.redis.cacheSet(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 
   async findOne(id: string, viewerRole?: Role) {
     const cacheKey = `${productDetailCachePrefix(id)}${roleBucket(viewerRole)}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.redis.cacheGet(cacheKey);
     if (cached) return cached;
 
     const [product, threshold] = await Promise.all([
@@ -198,7 +198,7 @@ export class ProductsService {
     if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
 
     const result = await this.serialize(product, threshold, viewerRole);
-    await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
+    await this.redis.cacheSet(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 

@@ -141,9 +141,9 @@ describe('room photos belong to the customer who uploaded them', () => {
 
 describe('after-commit cache clean-up cannot fail the request', () => {
   it('a Redis outage is swallowed', async () => {
-    const redis = { delByPrefix: jest.fn().mockRejectedValue(new Error('redis down')) };
+    const redis = { cacheDelByPrefix: jest.fn().mockRejectedValue(new Error('redis down')) };
     await expect(invalidateProductsCache(redis as never, ['p1'])).resolves.toBeUndefined();
-    expect(redis.delByPrefix).toHaveBeenCalled();
+    expect(redis.cacheDelByPrefix).toHaveBeenCalled();
   });
 });
 

@@ -38,7 +38,8 @@ export const validationSchema = Joi.object({
   COOKIE_PATH: Joi.string().optional(),
 
   DATABASE_URL: Joi.string().uri().required(),
-  REDIS_URL: Joi.string().uri().default('redis://localhost:6379'),
+  // Optional: leave unset to run without Redis (state in Postgres, no response cache).
+  REDIS_URL: Joi.string().uri().allow('').optional(),
 
   JWT_ACCESS_SECRET: Joi.string().min(16).required(),
   JWT_ACCESS_TTL: Joi.string().default('15m'),

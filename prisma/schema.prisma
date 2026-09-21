@@ -886,3 +886,18 @@ model ProfilingQuestion {
 
   @@index([position])
 }
+
+// ---------------------------------------------------------------------------
+// Ephemeral key/value state — only used when there is no Redis (REDIS_URL unset)
+// ---------------------------------------------------------------------------
+
+/// Stands in for Redis for OTP codes, pending registrations and duplicate-suppression
+/// keys when the app runs without it (see `RedisService`). Rows past `expiresAt` are
+/// treated as absent and swept hourly. Empty and unused when Redis is configured.
+model KeyValueEntry {
+  key       String    @id
+  value     String
+  expiresAt DateTime?
+
+  @@index([expiresAt])
+}

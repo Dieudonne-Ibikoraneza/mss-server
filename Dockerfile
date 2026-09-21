@@ -14,4 +14,6 @@ COPY prisma ./prisma
 RUN npm ci --omit=dev && npx prisma generate
 COPY --from=builder /app/dist ./dist
 EXPOSE 4000
-CMD ["node", "dist/main"]
+# Applies any pending migrations first (a no-op when there are none) — the Postgres-backed
+# fallback for Redis needs its table on hosts that run this image with no separate migrate step.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]

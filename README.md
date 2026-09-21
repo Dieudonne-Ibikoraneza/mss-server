@@ -2,16 +2,17 @@
 
 NestJS backend for the bilingual (EN/RW) tile e-commerce platform, 3D room
 visualizer, and AI chatbot described in `MAGNIFICAT SMART SPACE
-Documentation.pdf`. Talks to PostgreSQL via Prisma and to Redis for caching,
-rate limiting, OTP codes, and session/refresh-token bookkeeping.
+Documentation.pdf`. Talks to PostgreSQL via Prisma and, optionally, to Redis for
+caching, rate limiting and OTP codes (see [Running without Redis](#running-without-redis)).
 
 ## Stack
 
 - **NestJS 11** (Express, global versioning under `/api/v1`)
 - **PostgreSQL** via **Prisma ORM** (`prisma/schema.prisma`)
-- **Redis** via `ioredis` — OTP storage, pending-registration storage, response
+- **Redis** (optional) via `ioredis` — OTP storage, pending-registration storage, response
   caching (see [Caching](#caching) below), and
-  `@nest-lab/throttler-storage-redis`-backed rate limiting
+  `@nest-lab/throttler-storage-redis`-backed rate limiting. Without it the app falls back to
+  Postgres — see [Running without Redis](#running-without-redis)
 - **JWT** access + rotating refresh tokens — every role signs in the same
   passwordless way (see [Authentication](#authentication) below)
 - **Google Gemini** for the AI chatbot/recommendation engine, behind a swappable
@@ -93,7 +94,8 @@ temporary password — the staff member's first sign-in is the same
 
 OTP codes are 4 digits by default (`OTP_LENGTH`, matching the frontend's
 4-box input), TTL and resend cooldown are configurable in `.env`, and codes
-live in Redis only — never in Postgres.
+live in Redis (or, when there is no Redis, in the `KeyValueEntry` table — see
+[Running without Redis](#running-without-redis)) — never in the `User` table.
 
 ## AI chatbot
 
@@ -185,6 +187,21 @@ immediately, via a `SCAN`-based prefix delete (`RedisService.delByPrefix`) —
 not just create/update/delete on the resource itself, but anything else that
 touches the same data: stock adjustments, and order delivery (which changes
 `quantityOnHand`, and therefore the cached `stockStatus`).
+
+## Running without Redis
+
+Leave `REDIS_URL` unset (or empty) and the API runs with no Redis at all — meant for hosts
+where you can't run one, e.g. Render's free tier:
+
+| What used Redis | Without it |
+| --- | --- |
+| OTP codes, attempt counters, resend cooldowns, pending registrations, event dedup keys | Stored in the Postgres table `KeyValueEntry`, with the same atomic guarantees (one winner per claim, one use per code); expired rows are ignored on read and swept hourly |
+| Response cache for `GET /collections` and `GET /products` | Off — every request queries Postgres |
+| Rate limiting | The throttler's in-memory counters (per API process; fine for a single instance, not shared across several) |
+
+The table comes from migration `20260921120000_key_value_entry`, so run `prisma migrate deploy`
+before starting (the Dockerfile does this on boot). With `REDIS_URL` set, behaviour is exactly
+as described above and the table stays empty.
 
 ## Pagination
 

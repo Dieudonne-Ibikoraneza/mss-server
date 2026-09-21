@@ -30,7 +30,7 @@ export class CollectionsService {
 
   async findAll(query: QueryCollectionsDto) {
     const cacheKey = `${LIST_CACHE_PREFIX}page=${query.page}:limit=${query.limit}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.redis.cacheGet(cacheKey);
     if (cached) return cached;
 
     const where = { isActive: true };
@@ -45,7 +45,7 @@ export class CollectionsService {
     ]);
 
     const result = paginate(await this.withImageUrls(items), total, query.page, query.limit);
-    await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
+    await this.redis.cacheSet(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 
@@ -59,7 +59,7 @@ export class CollectionsService {
     const staffView = canSeeExactStock(viewerRole);
     const cacheKey = `${DETAIL_CACHE_PREFIX}${id}`;
     if (!staffView) {
-      const cached = await this.redis.get(cacheKey);
+      const cached = await this.redis.cacheGet(cacheKey);
       if (cached) return cached;
     }
 
@@ -77,7 +77,7 @@ export class CollectionsService {
           return customerSafe;
         });
     const result = { ...collection, products, image: await this.withImageUrl(collection.image) };
-    if (!staffView) await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
+    if (!staffView) await this.redis.cacheSet(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 
@@ -96,7 +96,7 @@ export class CollectionsService {
       },
     });
     await bestEffort('clear the collection list cache', () =>
-      this.redis.delByPrefix(LIST_CACHE_PREFIX),
+      this.redis.cacheDelByPrefix(LIST_CACHE_PREFIX),
     );
     return collection;
   }
@@ -142,8 +142,8 @@ export class CollectionsService {
     });
     await bestEffort('clear the collection cache', () =>
       Promise.all([
-        this.redis.delByPrefix(LIST_CACHE_PREFIX),
-        this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
+        this.redis.cacheDelByPrefix(LIST_CACHE_PREFIX),
+        this.redis.cacheDel(`${DETAIL_CACHE_PREFIX}${id}`),
       ]),
     );
     return collection;
@@ -154,8 +154,8 @@ export class CollectionsService {
     await this.prisma.collection.update({ where: { id }, data: { isActive: false } });
     await bestEffort('clear the collection cache', () =>
       Promise.all([
-        this.redis.delByPrefix(LIST_CACHE_PREFIX),
-        this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
+        this.redis.cacheDelByPrefix(LIST_CACHE_PREFIX),
+        this.redis.cacheDel(`${DETAIL_CACHE_PREFIX}${id}`),
       ]),
     );
   }

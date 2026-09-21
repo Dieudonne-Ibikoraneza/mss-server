@@ -144,8 +144,7 @@ export class OtpService {
       );
     }
 
-    const attempts = await this.redis.client.incr(attemptsKey);
-    if (attempts === 1) await this.redis.client.expire(attemptsKey, this.ttlSeconds);
+    const attempts = await this.redis.incr(attemptsKey, this.ttlSeconds);
     if (attempts > this.maxAttempts) {
       await this.redis.del(key);
       throw badRequest(
@@ -157,7 +156,7 @@ export class OtpService {
     if (record.codeHash !== this.hash(code)) return false;
 
     // Right code — only the request that actually removes it may use it.
-    const consumed = await this.redis.client.del(key);
+    const consumed = await this.redis.del(key);
     if (consumed !== 1) {
       throw badRequest(
         'otp.codeExpired',

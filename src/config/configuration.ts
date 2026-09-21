@@ -24,7 +24,8 @@ export default () => ({
     url: process.env.DATABASE_URL,
   },
   redis: {
-    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    // Unset (or empty) = no Redis: state falls back to Postgres and caching is off.
+    url: process.env.REDIS_URL || undefined,
   },
   /**
    * The refresh-token cookie (see `auth/refresh-cookie.ts`). `Secure` by default

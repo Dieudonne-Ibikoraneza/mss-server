@@ -20,12 +20,12 @@ describe('collections: exact stock and cost stay staff-only', () => {
   const build = (cached: unknown = null) => {
     const store = new Map<string, unknown>();
     const redis = {
-      get: jest.fn((key: string) => Promise.resolve(store.get(key) ?? cached)),
-      set: jest.fn((key: string, value: unknown) => {
+      cacheGet: jest.fn((key: string) => Promise.resolve(store.get(key) ?? cached)),
+      cacheSet: jest.fn((key: string, value: unknown) => {
         store.set(key, value);
         return Promise.resolve();
       }),
-      del: jest.fn(),
+      cacheDel: jest.fn(),
     };
     const prisma = {
       collection: {
@@ -59,7 +59,7 @@ describe('collections: exact stock and cost stay staff-only', () => {
       const { service, redis } = build();
       const result = (await service.findOne('c1', role)) as { products: Record<string, unknown>[] };
       expect(result.products[0].quantityOnHandSqm).toBe(100);
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.cacheSet).not.toHaveBeenCalled();
     },
   );
 
@@ -67,11 +67,11 @@ describe('collections: exact stock and cost stay staff-only', () => {
     const { service, redis } = build();
     await service.findOne('c1', undefined);
     const cached = (
-      redis.set.mock.calls as [string, { products: Record<string, unknown>[] }][]
+      redis.cacheSet.mock.calls as [string, { products: Record<string, unknown>[] }][]
     )[0][1];
     for (const key of sensitive) expect(cached.products[0]).not.toHaveProperty(key);
     // ...and the key is versioned, so entries written before this fix (with full rows) are never read.
-    expect((redis.set.mock.calls as unknown as [string][])[0][0]).toContain(':v2:');
+    expect((redis.cacheSet.mock.calls as unknown as [string][])[0][0]).toContain(':v2:');
   });
 
   it('staff always read fresh rows, even when a cached (customer-safe) copy exists', async () => {

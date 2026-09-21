@@ -45,7 +45,12 @@ import { HealthModule } from './health/health.module';
             limit: config.get<number>('throttle.limit') ?? 100,
           },
         ],
-        storage: new ThrottlerStorageRedisService(config.get<string>('redis.url')),
+        // Without Redis the throttler keeps its counters in this process's memory (its
+        // built-in default) — fine for a single instance, and it spares Postgres a write on
+        // every request.
+        storage: config.get<string>('redis.url')
+          ? new ThrottlerStorageRedisService(config.get<string>('redis.url'))
+          : undefined,
       }),
     }),
     EventEmitterModule.forRoot(),

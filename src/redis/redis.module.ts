@@ -10,10 +10,12 @@ import { RedisService } from './redis.service';
     {
       provide: REDIS_CLIENT,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) =>
-        new Redis(config.get<string>('redis.url') ?? 'redis://localhost:6379', {
-          maxRetriesPerRequest: 3,
-        }),
+      // No `REDIS_URL` means no Redis at all (not "try localhost"): `RedisService` then falls
+      // back to Postgres — see its class comment.
+      useFactory: (config: ConfigService) => {
+        const url = config.get<string>('redis.url');
+        return url ? new Redis(url, { maxRetriesPerRequest: 3 }) : null;
+      },
     },
     RedisService,
   ],
