@@ -41,7 +41,15 @@ export class OtpService {
 
     const isProduction = config.get<string>('app.env') === 'production';
     const bypassCode = config.get<string>('otp.devBypassCode');
-    this.devBypassCode = !isProduction && bypassCode ? bypassCode : undefined;
+    // Off in production unless explicitly switched on (OTP_ALLOW_BYPASS_IN_PRODUCTION=true) —
+    // for a deployment that is still being tested and can't deliver real codes yet.
+    const bypassAllowed = !isProduction || config.get<boolean>('otp.allowBypassInProduction');
+    this.devBypassCode = bypassAllowed && bypassCode ? bypassCode : undefined;
+    if (this.devBypassCode && isProduction) {
+      this.logger.warn(
+        `OTP bypass code is ACTIVE in production (OTP_ALLOW_BYPASS_IN_PRODUCTION=true): "${this.devBypassCode}" signs in ANY account, staff included. Testing only.`,
+      );
+    }
   }
 
   private codeKey(destination: string, purpose: OtpPurpose) {
@@ -102,10 +110,22 @@ export class OtpService {
       this.logger.log(
         `OTP for ${destination} (${purpose}): ${code} — dev bypass "${this.devBypassCode}" also works.`,
       );
-    } else if (channel === 'email') {
-      await this.notifications.sendOtpEmail(destination, code, language, this.ttlSeconds);
     } else {
-      await this.notifications.sendOtpSms(destination, code, language);
+      // A delivery failure (e.g. a host that blocks SMTP) must not fail the request: the code is
+      // already stored, so the caller carries on and can still verify it (or use the bypass code).
+      try {
+        if (channel === 'email') {
+          await this.notifications.sendOtpEmail(destination, code, language, this.ttlSeconds);
+        } else {
+          await this.notifications.sendOtpSms(destination, code, language);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Could not deliver the ${purpose} code to ${destination} by ${channel} — continuing anyway: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
     }
 
     const minutes = Math.round(this.ttlSeconds / 60);

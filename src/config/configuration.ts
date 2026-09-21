@@ -61,6 +61,11 @@ export default () => ({
      * provider. Set to an empty string to disable even in dev.
      */
     devBypassCode: process.env.OTP_DEV_BYPASS_CODE ?? '1234',
+    /**
+     * Lets `devBypassCode` work when NODE_ENV=production too (the Docker image sets that). With it
+     * on, the code signs in any account — staff included — so only for a deployment under test.
+     */
+    allowBypassInProduction: process.env.OTP_ALLOW_BYPASS_IN_PRODUCTION === 'true',
   },
   throttle: {
     ttlMs: parseInt(process.env.THROTTLE_TTL_MS ?? '60000', 10),
