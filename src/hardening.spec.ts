@@ -252,4 +252,36 @@ describe('saved work is never lost to a failing analytics call, and hidden recor
       service.create('u1', { items: [{ productId: 'p1', areaSqm: 5 }] }),
     ).resolves.toEqual({ id: 'q1' });
   });
+
+  describe('quote status updates', () => {
+    const build = (updateError?: Error) => {
+      const prisma = {
+        quoteRequest: {
+          findUnique: jest.fn().mockResolvedValue({ id: 'q1', userId: 'u1' }),
+          update: updateError
+            ? jest.fn().mockRejectedValue(updateError)
+            : jest.fn().mockResolvedValue({ id: 'q1', status: 'NEGOTIATING' }),
+        },
+      };
+      const events = { recordJourneyEvent: failing() };
+      return { service: new QuotesService(prisma as never, events as never), prisma, events };
+    };
+    const staffUser = { id: 's1', role: 'SALES_PERSON' } as never;
+
+    it('the status change is returned even though the analytics event failed', async () => {
+      const { service, events } = build();
+      await expect(
+        service.updateStatus('q1', { status: 'NEGOTIATING' } as never, staffUser),
+      ).resolves.toMatchObject({ status: 'NEGOTIATING' });
+      expect(events.recordJourneyEvent).toHaveBeenCalled();
+    });
+
+    it('nothing is recorded when the update itself fails', async () => {
+      const { service, events } = build(new Error('db down'));
+      await expect(
+        service.updateStatus('q1', { status: 'NEGOTIATING' } as never, staffUser),
+      ).rejects.toThrow('db down');
+      expect(events.recordJourneyEvent).not.toHaveBeenCalled();
+    });
+  });
 });

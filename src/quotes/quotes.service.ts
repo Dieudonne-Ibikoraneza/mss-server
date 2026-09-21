@@ -80,17 +80,22 @@ export class QuotesService {
       throw forbidden('quotes.onlySalesCanUpdate', 'Only sales staff can update a quote status.');
     }
 
-    if (dto.status === 'NEGOTIATING') {
-      await this.events.recordJourneyEvent({
-        userId: quote.userId,
-        sessionId: quote.userId,
-        stage: 'NEGOTIATED',
-      });
-    }
-
-    return this.prisma.quoteRequest.update({
+    const updated = await this.prisma.quoteRequest.update({
       where: { id },
       data: { status: dto.status, notes: dto.notes },
     });
+
+    // Only once the status has really changed, and best-effort: an analytics failure must not
+    // report an error for an update that was saved (or make staff repeat it).
+    if (dto.status === 'NEGOTIATING') {
+      await bestEffort('record the negotiation stage', () =>
+        this.events.recordJourneyEvent({
+          userId: quote.userId,
+          sessionId: quote.userId,
+          stage: 'NEGOTIATED',
+        }),
+      );
+    }
+    return updated;
   }
 }
