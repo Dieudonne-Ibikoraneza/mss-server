@@ -26,7 +26,7 @@ describe('OrdersService#verifyPayment — a single winner', () => {
     items: [item],
   };
 
-  const build = (claimed: number) => {
+  const build = (claimed: number, notifications: object = { notifyLowStock: jest.fn() }) => {
     const tx = {
       order: {
         updateMany: jest.fn().mockResolvedValue({ count: claimed }),
@@ -46,7 +46,7 @@ describe('OrdersService#verifyPayment — a single winner', () => {
       { delByPrefix: jest.fn() } as never,
       {} as never,
       {} as never,
-      { notifyLowStock: jest.fn() } as never,
+      notifications as never,
       {} as never,
       {} as never,
       {} as never,
@@ -73,6 +73,30 @@ describe('OrdersService#verifyPayment — a single winner', () => {
     const claimOrder: number = tx.order.updateMany.mock.invocationCallOrder[0];
     const firstStockWrite: number = tx.$executeRaw.mock.invocationCallOrder[0];
     expect(claimOrder).toBeLessThan(firstStockWrite);
+  });
+
+  it('a failing receipt email cannot turn a verified payment into an error', async () => {
+    const receipt = jest.fn().mockRejectedValue(new Error('SMTP down'));
+    const { service, tx } = build(1, {
+      notifyLowStock: jest.fn(),
+      sendPaymentReceiptEmail: receipt,
+    });
+    (
+      jest.spyOn(service as never, 'promoteWaitlistedOrders' as never) as jest.SpyInstance
+    ).mockResolvedValue(undefined);
+    const prisma = (service as unknown as { prisma: { order: { findUnique: jest.Mock } } }).prisma;
+    prisma.order.findUnique.mockResolvedValue({
+      ...order,
+      customer: { email: 'a@example.test', fullName: 'A', language: 'EN' },
+      subtotal: 400,
+      transportFee: 0,
+      total: 400,
+      currency: 'RWF',
+    });
+    tx.order.findUniqueOrThrow.mockResolvedValue({ id: 'o1' });
+
+    await expect(service.verifyPayment('o1', staff)).resolves.toBeDefined();
+    expect(receipt).toHaveBeenCalled();
   });
 
   it('when it loses the claim, releases and deducts nothing and reports a conflict', async () => {

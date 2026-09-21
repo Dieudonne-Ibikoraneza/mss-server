@@ -5,7 +5,7 @@ import { AuthService } from './auth.service';
 
 describe('AuthService — account status enforcement', () => {
   let prisma: {
-    user: { findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
+    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; create: jest.Mock };
     refreshToken: {
       findUnique: jest.Mock;
       update: jest.Mock;
@@ -29,7 +29,7 @@ describe('AuthService — account status enforcement', () => {
 
   beforeEach(() => {
     prisma = {
-      user: { findUnique: jest.fn(), update: jest.fn(), create: jest.fn() },
+      user: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
       refreshToken: {
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -62,6 +62,30 @@ describe('AuthService — account status enforcement', () => {
       config as never,
       otp as never,
     );
+  });
+
+  describe('register', () => {
+    const dto = {
+      fullName: 'Someone',
+      email: 'pending@example.com',
+      phone: '+250788111222',
+      language: 'EN',
+    } as never;
+
+    it('stores the pending profile once the code has been sent', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+      await service.register(dto);
+      expect(otp.send.mock.invocationCallOrder[0]).toBeLessThan(
+        redis.set.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('a request turned away by the resend cooldown leaves the pending profile untouched', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+      otp.send.mockRejectedValue(new Error('Please wait before requesting another code.'));
+      await expect(service.register(dto)).rejects.toThrow('Please wait');
+      expect(redis.set).not.toHaveBeenCalled();
+    });
   });
 
   describe('login', () => {

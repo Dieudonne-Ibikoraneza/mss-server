@@ -72,20 +72,32 @@ export class UsersService {
    * than hard-deleting: orders, payments and stock movements must stay
    * attributable, so the account is switched off and every session revoked.
    */
+  /**
+   * The system must always keep one active admin. Locks every active admin row, so two admins
+   * demoting, deactivating or closing each other at the same instant can't both see the other as
+   * "still there", then throws unless some active admin other than `id` remains.
+   */
+  private async assertAnotherActiveAdmin(
+    tx: Prisma.TransactionClient,
+    id: string,
+    code: 'users.lastAdmin' | 'users.lastAdminChange',
+    message: string,
+  ) {
+    const admins = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM "User" WHERE role = 'ADMIN' AND status = 'ACTIVE' FOR UPDATE`;
+    if (!admins.some((admin) => admin.id !== id)) throw badRequest(code, message);
+  }
+
   async closeOwnAccount(id: string) {
     const account = await this.findById(id);
     return this.prisma.$transaction(async (tx) => {
       if (account.role === Role.ADMIN) {
-        // Lock every active admin row first, so two admins closing their accounts at the
-        // same moment can't both see the other as "still there" and leave nobody.
-        const admins = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM "User" WHERE role = 'ADMIN' AND status = 'ACTIVE' FOR UPDATE`;
-        if (!admins.some((admin) => admin.id !== id)) {
-          throw badRequest(
-            'users.lastAdmin',
-            'You are the only active admin. Make another admin first, then close this account.',
-          );
-        }
+        await this.assertAnotherActiveAdmin(
+          tx,
+          id,
+          'users.lastAdmin',
+          'You are the only active admin. Make another admin first, then close this account.',
+        );
       }
       const user = await tx.user.update({
         where: { id },
@@ -182,7 +194,7 @@ export class UsersService {
   }
 
   async updateStaff(id: string, dto: UpdateStaffDto) {
-    await this.findStaffById(id);
+    const staff = await this.findStaffById(id);
     if (dto.phone) {
       const existing = await this.prisma.user.findFirst({
         where: { phone: dto.phone, id: { not: id } },
@@ -190,27 +202,56 @@ export class UsersService {
       if (existing)
         throw conflict('users.phoneInUse', 'Another account already uses this phone number.');
     }
-    return this.prisma.user.update({ where: { id }, data: dto, select: SAFE_USER_SELECT });
+    const demotesAdmin =
+      staff.role === Role.ADMIN &&
+      staff.status === UserStatus.ACTIVE &&
+      dto.role &&
+      dto.role !== Role.ADMIN;
+    if (!demotesAdmin) {
+      return this.prisma.user.update({ where: { id }, data: dto, select: SAFE_USER_SELECT });
+    }
+    // Taking the admin role away from an admin (yourself included) must leave another one.
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertAnotherActiveAdmin(
+        tx,
+        id,
+        'users.lastAdminChange',
+        'There must always be one active admin. Make another admin first, then change this account.',
+      );
+      return tx.user.update({ where: { id }, data: dto, select: SAFE_USER_SELECT });
+    });
   }
 
   async setStaffStatus(id: string, status: 'ACTIVE' | 'INACTIVE', currentUserId: string) {
     if (id === currentUserId && status === 'INACTIVE') {
       throw badRequest('users.cannotDeactivateSelf', 'You cannot deactivate your own account.');
     }
-    await this.findStaffById(id);
+    const target = await this.findStaffById(id);
 
     if (status === 'INACTIVE') {
       // Deactivation must take effect immediately, not just on the next
       // access-token expiry — revoke every refresh token so the account
       // can't keep rotating in new ones.
-      const [user] = await this.prisma.$transaction([
-        this.prisma.user.update({ where: { id }, data: { status }, select: SAFE_USER_SELECT }),
-        this.prisma.refreshToken.updateMany({
+      return this.prisma.$transaction(async (tx) => {
+        if (target.role === Role.ADMIN && target.status === UserStatus.ACTIVE) {
+          await this.assertAnotherActiveAdmin(
+            tx,
+            id,
+            'users.lastAdminChange',
+            'There must always be one active admin. Make another admin first, then change this account.',
+          );
+        }
+        const user = await tx.user.update({
+          where: { id },
+          data: { status },
+          select: SAFE_USER_SELECT,
+        });
+        await tx.refreshToken.updateMany({
           where: { userId: id, revokedAt: null },
           data: { revokedAt: new Date() },
-        }),
-      ]);
-      return user;
+        });
+        return user;
+      });
     }
 
     return this.prisma.user.update({ where: { id }, data: { status }, select: SAFE_USER_SELECT });

@@ -1,6 +1,11 @@
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { FavoritesService } from './favorites/favorites.service';
+import { QuotesService } from './quotes/quotes.service';
+import { RoomsService } from './rooms/rooms.service';
 import { AuthService } from './auth/auth.service';
 import { ChatbotService } from './chatbot/chatbot.service';
 import { CompareProductsDto } from './chatbot/dto/compare-products.dto';
@@ -73,17 +78,28 @@ describe('server-side fetches never go to internal addresses', () => {
     'fe80::1',
     'fd00::1',
     '::ffff:127.0.0.1',
+    '::ffff:7f00:1', // how Node writes ::ffff:127.0.0.1
+    '::ffff:a9fe:a9fe', // 169.254.169.254
+    '::ffff:c0a8:101', // 192.168.1.1
+    '::7f00:1', // IPv4-compatible
+    '64:ff9b::7f00:1', // NAT64
+    '2002:7f00:1::', // 6to4 wrapping 127.0.0.1
+    '0:0:0:0:0:0:0:1',
+    '::ffff:0:0',
     'not-an-ip',
   ])('%s is private', (address) => expect(isPrivateAddress(address)).toBe(true));
 
-  it.each(['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111'])('%s is public', (address) =>
-    expect(isPrivateAddress(address)).toBe(false),
+  it.each(['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111', '::ffff:808:808', '64:ff9b::808:808'])(
+    '%s is public',
+    (address) => expect(isPrivateAddress(address)).toBe(false),
   );
 
   it.each([
     'http://127.0.0.1/x.png',
     'http://169.254.169.254/latest/meta-data/',
     'http://[::1]/x.png',
+    'http://[::ffff:127.0.0.1]/x.png',
+    'http://[::ffff:7f00:1]/x.png',
     'http://localhost/x.png',
     'file:///etc/passwd',
     'ftp://example.com/x.png',
@@ -128,5 +144,112 @@ describe('after-commit cache clean-up cannot fail the request', () => {
     const redis = { delByPrefix: jest.fn().mockRejectedValue(new Error('redis down')) };
     await expect(invalidateProductsCache(redis as never, ['p1'])).resolves.toBeUndefined();
     expect(redis.delByPrefix).toHaveBeenCalled();
+  });
+});
+
+describe('saved work is never lost to a failing analytics call, and hidden records cannot be used', () => {
+  const failing = () => jest.fn().mockRejectedValue(new Error('analytics down'));
+
+  describe('favorites', () => {
+    const build = (over: { product?: unknown; createError?: unknown } = {}) => {
+      const prisma = {
+        product: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue('product' in over ? over.product : { id: 'p1', isActive: true }),
+        },
+        favorite: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          create: over.createError
+            ? jest.fn().mockRejectedValue(over.createError)
+            : jest.fn().mockResolvedValue({ id: 'f1' }),
+        },
+      };
+      const events = { recordTileEvent: failing() };
+      return {
+        service: new FavoritesService(prisma as never, events as never, {} as never),
+        prisma,
+      };
+    };
+
+    it('an inactive product cannot be saved', async () => {
+      const { service, prisma } = build({ product: { id: 'p1', isActive: false } });
+      await expect(service.add('u1', 'p1', 's')).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.favorite.create).not.toHaveBeenCalled();
+    });
+
+    it('the favorite is returned even though the analytics event failed', async () => {
+      await expect(build().service.add('u1', 'p1', 's')).resolves.toEqual({ id: 'f1' });
+    });
+
+    it('two saves at once: the loser gets "already saved", not a server error', async () => {
+      const clash = new Prisma.PrismaClientKnownRequestError('dup', {
+        code: 'P2002',
+        clientVersion: 'test',
+      });
+      await expect(
+        build({ createError: clash }).service.add('u1', 'p1', 's'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('saved designs', () => {
+    const dto = {
+      roomId: 'r1',
+      name: 'D',
+      tiles: [{ surface: 'FLOOR', productId: 'p1' }],
+    } as never;
+    const build = (room: unknown, product: unknown) => {
+      const prisma = {
+        room: { findUnique: jest.fn().mockResolvedValue(room) },
+        product: { findMany: jest.fn().mockResolvedValue(product ? [product] : []) },
+        roomDesign: { create: jest.fn().mockResolvedValue({ id: 'd1', tiles: [] }) },
+      };
+      const events = { recordTileEvent: failing(), recordJourneyEvent: failing() };
+      const service = new RoomsService(prisma as never, events as never, {} as never, {} as never);
+      (service as unknown as { withSerializedTiles: (d: unknown) => unknown }).withSerializedTiles =
+        (design) => design;
+      return { service, prisma };
+    };
+    const tile = { id: 'p1', name: 'T', suitableFor: 'BOTH', isActive: true };
+
+    it('a hidden room is refused', async () => {
+      const { service, prisma } = build({ id: 'r1', isActive: false }, tile);
+      await expect(service.saveDesign('u1', dto)).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.roomDesign.create).not.toHaveBeenCalled();
+    });
+
+    it('an inactive product is refused', async () => {
+      const { service } = build({ id: 'r1', isActive: true }, { ...tile, isActive: false });
+      await expect(service.saveDesign('u1', dto)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('the design is returned even though the analytics events failed', async () => {
+      const { service } = build({ id: 'r1', isActive: true }, tile);
+      await expect(service.saveDesign('u1', dto)).resolves.toMatchObject({ id: 'd1' });
+    });
+  });
+
+  it('a quotation request is returned even though the analytics event failed', async () => {
+    const prisma = {
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'p1',
+            name: 'T',
+            isActive: true,
+            price: 100,
+            boxCoverageSqm: 1,
+            piecesPerBox: 4,
+            collection: { tileAreaSqm: 0.25 },
+          },
+        ]),
+      },
+      quoteRequest: { create: jest.fn().mockResolvedValue({ id: 'q1' }) },
+    };
+    const service = new QuotesService(prisma as never, { recordJourneyEvent: failing() } as never);
+    await expect(
+      service.create('u1', { items: [{ productId: 'p1', areaSqm: 5 }] }),
+    ).resolves.toEqual({ id: 'q1' });
   });
 });

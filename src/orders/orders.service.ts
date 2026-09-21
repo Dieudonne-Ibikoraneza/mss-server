@@ -1611,13 +1611,16 @@ export class OrdersService {
 
     // Best-effort, same as `notifyLowStock` — a mail failure must never
     // undo the quotation that was already sent.
-    if (order.customer.email) {
-      await this.notifications.sendQuotationReadyEmail(
-        order.customer.email,
-        order.customer.fullName,
-        order.orderNumber,
-        order.id,
-        order.customer.language,
+    const recipient = order.customer.email;
+    if (recipient) {
+      await this.bestEffort('quotation-ready email', () =>
+        this.notifications.sendQuotationReadyEmail(
+          recipient,
+          order.customer.fullName,
+          order.orderNumber,
+          order.id,
+          order.customer.language,
+        ),
       );
     }
 
@@ -1805,15 +1808,18 @@ export class OrdersService {
     await this.bestEffort(`socket push for rejected payment on order ${id}`, () =>
       this.negotiations.emitMessage('order', id, message),
     );
-    if (order.customer.email) {
-      await this.notifications.sendPaymentRejectedEmail(
-        order.customer.email,
-        order.customer.fullName,
-        order.orderNumber,
-        order.id,
-        reason,
-        reservedMinutes,
-        order.customer.language,
+    const recipient = order.customer.email;
+    if (recipient) {
+      await this.bestEffort('payment-rejected email', () =>
+        this.notifications.sendPaymentRejectedEmail(
+          recipient,
+          order.customer.fullName,
+          order.orderNumber,
+          order.id,
+          reason,
+          reservedMinutes,
+          order.customer.language,
+        ),
       );
     }
 
@@ -1931,22 +1937,25 @@ export class OrdersService {
 
     // Best-effort, same as `notifyLowStock` — a mail failure must never
     // undo the payment verification that already happened.
-    if (order.customer.email) {
-      await this.notifications.sendPaymentReceiptEmail(
-        order.customer.email,
-        order.customer.fullName,
-        order.orderNumber,
-        order.id,
-        order.items.map((item) => ({
-          name: item.product.name,
-          areaSqm: Number(item.requiredAreaSqm),
-          totalPrice: Number(item.totalPrice),
-        })),
-        Number(order.subtotal),
-        Number(order.transportFee ?? 0),
-        Number(order.total),
-        order.currency,
-        order.customer.language,
+    const recipient = order.customer.email;
+    if (recipient) {
+      await this.bestEffort('payment receipt email', () =>
+        this.notifications.sendPaymentReceiptEmail(
+          recipient,
+          order.customer.fullName,
+          order.orderNumber,
+          order.id,
+          order.items.map((item) => ({
+            name: item.product.name,
+            areaSqm: Number(item.requiredAreaSqm),
+            totalPrice: Number(item.totalPrice),
+          })),
+          Number(order.subtotal),
+          Number(order.transportFee ?? 0),
+          Number(order.total),
+          order.currency,
+          order.customer.language,
+        ),
       );
     }
 

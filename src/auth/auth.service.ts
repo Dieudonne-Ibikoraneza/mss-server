@@ -71,9 +71,12 @@ export class AuthService {
       heardAboutUs: dto.heardAboutUs,
       language: dto.language,
     };
+    // The code goes first: it claims the resend cooldown, so a request that is turned away
+    // (someone re-submitting a pending email with other details) must not have replaced the
+    // profile that the code already sent will create.
+    const result = await this.otp.send(dto.email, 'email', 'register', pending.language);
     await this.redis.set(this.pendingKey(dto.email), pending, this.pendingTtlSeconds);
-
-    return this.otp.send(dto.email, 'email', 'register', pending.language);
+    return result;
   }
 
   /** Starts a login: sends a code to an existing, already-registered account. */

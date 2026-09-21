@@ -1,3 +1,4 @@
+import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { forbidden, notFound } from '@/common/errors/app-error';
 import { Role } from '@prisma/client';
@@ -50,11 +51,14 @@ export class QuotesService {
       data: { userId, items, notes: dto.notes },
     });
 
-    await this.events.recordJourneyEvent({
-      userId,
-      sessionId: userId,
-      stage: 'REQUESTED_QUOTATION',
-    });
+    // The request is saved; analytics are best-effort so a failure there can't cause a duplicate.
+    await bestEffort('record the quotation request', () =>
+      this.events.recordJourneyEvent({
+        userId,
+        sessionId: userId,
+        stage: 'REQUESTED_QUOTATION',
+      }),
+    );
     return quote;
   }
 

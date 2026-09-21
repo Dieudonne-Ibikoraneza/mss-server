@@ -1,6 +1,6 @@
 import type { Logger } from '@nestjs/common';
 import type { GeneratedImage } from './recommendation-image.provider';
-import { assertPublicHttpUrl } from '@/common/utils/safe-url';
+import { fetchPublicFile } from '@/common/utils/safe-url';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -67,22 +67,11 @@ export async function callGeminiImageModel(
 export async function downloadReferenceImage(
   url: string,
 ): Promise<{ mimeType: string; data: string } | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    // The URL can come from a catalog editor, so it is never trusted: it must point at a
-    // public host, and a redirect (which could bounce to an internal address) is refused.
-    const safeUrl = await assertPublicHttpUrl(url);
-    const response = await fetch(safeUrl, { signal: controller.signal, redirect: 'error' });
-    if (!response.ok) return null;
-    const contentType = response.headers.get('content-type')?.split(';')[0] ?? 'image/jpeg';
-    if (!contentType.startsWith('image/')) return null;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) return null;
-    return { mimeType: contentType, data: buffer.toString('base64') };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
+  // The URL can come from a catalog editor, so it is never trusted: `fetchPublicFile` only talks
+  // to public addresses, connects to the address it checked, and refuses redirects.
+  const file = await fetchPublicFile(url, { timeoutMs: 15_000, maxBytes: 10 * 1024 * 1024 });
+  if (!file || file.buffer.length === 0) return null;
+  const contentType = file.contentType || 'image/jpeg';
+  if (!contentType.startsWith('image/')) return null;
+  return { mimeType: contentType, data: file.buffer.toString('base64') };
 }

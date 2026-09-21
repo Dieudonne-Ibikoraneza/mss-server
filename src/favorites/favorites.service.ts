@@ -1,5 +1,7 @@
+import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { conflict, notFound } from '@/common/errors/app-error';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { ProductsService } from '@/products/products.service';
@@ -35,15 +37,29 @@ export class FavoritesService {
 
   async add(userId: string, productId: string, sessionId: string) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
-    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
+    // A retired product is gone for customers, whatever a stale tab still sends.
+    if (!product?.isActive) throw notFound('catalog.productNotFound', 'Product not found.');
 
+    const alreadySaved = () =>
+      conflict('favorites.alreadySaved', 'Product already saved to favorites.');
     const exists = await this.prisma.favorite.findUnique({
       where: { userId_productId: { userId, productId } },
     });
-    if (exists) throw conflict('favorites.alreadySaved', 'Product already saved to favorites.');
+    if (exists) throw alreadySaved();
 
-    const favorite = await this.prisma.favorite.create({ data: { userId, productId } });
-    await this.events.recordTileEvent({ userId, sessionId, productId, type: 'SAVED' });
+    let favorite;
+    try {
+      favorite = await this.prisma.favorite.create({ data: { userId, productId } });
+    } catch (error) {
+      // Two requests at once: the loser hit the unique constraint, not a server fault.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw alreadySaved();
+      }
+      throw error;
+    }
+    await bestEffort('record the saved favorite', () =>
+      this.events.recordTileEvent({ userId, sessionId, productId, type: 'SAVED' }),
+    );
     return favorite;
   }
 

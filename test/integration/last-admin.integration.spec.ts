@@ -70,4 +70,63 @@ describe('closing your own account keeps at least one active admin', () => {
       await prisma.user.count({ where: { role: Role.ADMIN, status: UserStatus.ACTIVE } }),
     ).toBe(1);
   });
+
+  describe('changing another way: demote or deactivate', () => {
+    const resetAdmins = () =>
+      prisma.user.updateMany({
+        where: { role: Role.ADMIN },
+        data: { status: UserStatus.INACTIVE },
+      });
+    const role = async (id: string) =>
+      (await prisma.user.findUniqueOrThrow({ where: { id } })).role;
+
+    it('the only admin cannot demote themselves', async () => {
+      await resetAdmins();
+      const admin = await makeUser(Role.ADMIN);
+      expect(await outcome(() => users.updateStaff(admin.id, { role: Role.SALES_PERSON }))).toBe(
+        'BadRequestException',
+      );
+      expect(await role(admin.id)).toBe(Role.ADMIN);
+      // Other edits are still fine, and so is a non-admin's role.
+      expect(await outcome(() => users.updateStaff(admin.id, { fullName: 'Renamed Admin' }))).toBe(
+        'ok',
+      );
+    });
+
+    it('with a second admin, one can be demoted — but not the last one left', async () => {
+      await resetAdmins();
+      const [a, b] = [await makeUser(Role.ADMIN), await makeUser(Role.ADMIN)];
+      expect(await outcome(() => users.updateStaff(a.id, { role: Role.DATA_ANALYST }))).toBe('ok');
+      expect(await outcome(() => users.updateStaff(b.id, { role: Role.DATA_ANALYST }))).toBe(
+        'BadRequestException',
+      );
+      expect(await role(b.id)).toBe(Role.ADMIN);
+    });
+
+    it('two admins demoting each other at the same instant: one admin remains', async () => {
+      await resetAdmins();
+      const [a, b] = [await makeUser(Role.ADMIN), await makeUser(Role.ADMIN)];
+      const results = await Promise.all([
+        outcome(() => users.updateStaff(a.id, { role: Role.SALES_PERSON })),
+        outcome(() => users.updateStaff(b.id, { role: Role.SALES_PERSON })),
+      ]);
+      expect(results.sort()).toEqual(['BadRequestException', 'ok']);
+      expect(
+        await prisma.user.count({ where: { role: Role.ADMIN, status: UserStatus.ACTIVE } }),
+      ).toBe(1);
+    });
+
+    it('two admins deactivating each other at the same instant: one admin remains', async () => {
+      await resetAdmins();
+      const [a, b] = [await makeUser(Role.ADMIN), await makeUser(Role.ADMIN)];
+      const results = await Promise.all([
+        outcome(() => users.setStaffStatus(a.id, 'INACTIVE', b.id)),
+        outcome(() => users.setStaffStatus(b.id, 'INACTIVE', a.id)),
+      ]);
+      expect(results.sort()).toEqual(['BadRequestException', 'ok']);
+      expect(
+        await prisma.user.count({ where: { role: Role.ADMIN, status: UserStatus.ACTIVE } }),
+      ).toBe(1);
+    });
+  });
 });

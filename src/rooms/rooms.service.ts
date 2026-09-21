@@ -1,3 +1,4 @@
+import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
 import { Language, Prisma, SuitableFor } from '@prisma/client';
@@ -118,7 +119,8 @@ export class RoomsService {
 
   async saveDesign(userId: string, dto: SaveRoomDesignDto) {
     const room = await this.prisma.room.findUnique({ where: { id: dto.roomId } });
-    if (!room) throw notFound('rooms.notFound', 'Room not found.');
+    // A hidden room is gone as far as customers are concerned, whatever a stale tab still sends.
+    if (!room?.isActive) throw notFound('rooms.notFound', 'Room not found.');
 
     // One product per surface — a design can't apply two different floor
     // tiles at once, so a duplicate surface in the payload is a client bug.
@@ -132,11 +134,11 @@ export class RoomsService {
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: dto.tiles.map((tile) => tile.productId) } },
-      select: { id: true, name: true, suitableFor: true },
+      select: { id: true, name: true, suitableFor: true, isActive: true },
     });
     for (const tile of dto.tiles) {
       const product = products.find((p) => p.id === tile.productId);
-      if (!product) {
+      if (!product?.isActive) {
         throw badRequest('rooms.tileProductNotFound', 'Product {{id}} could not be found.', {
           id: tile.productId,
         });
@@ -170,17 +172,21 @@ export class RoomsService {
       include: DESIGN_INCLUDE,
     });
 
-    await Promise.all(
-      dto.tiles.map((tile) =>
-        this.events.recordTileEvent({
-          userId,
-          sessionId: userId,
-          productId: tile.productId,
-          type: 'APPLIED',
-        }),
-      ),
-    );
-    await this.events.recordJourneyEvent({ userId, sessionId: userId, stage: 'SAVED_DESIGN' });
+    // The design is saved; analytics are best-effort, so a failure there can't make the customer
+    // retry and save it twice.
+    await bestEffort('record the saved design', async () => {
+      await Promise.all(
+        dto.tiles.map((tile) =>
+          this.events.recordTileEvent({
+            userId,
+            sessionId: userId,
+            productId: tile.productId,
+            type: 'APPLIED',
+          }),
+        ),
+      );
+      await this.events.recordJourneyEvent({ userId, sessionId: userId, stage: 'SAVED_DESIGN' });
+    });
 
     return this.withSerializedTiles(design);
   }

@@ -19,7 +19,8 @@ describe('UsersService — setStaffStatus revokes sessions on deactivation', () 
         update: jest.fn().mockResolvedValue({ ...staffMember, status: 'INACTIVE' }),
       },
       refreshToken: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
-      $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
+      // The service works inside an interactive transaction; here the transaction client is this same mock.
+      $transaction: jest.fn((run: (tx: unknown) => unknown) => run(prisma)),
     };
     notifications = {};
     service = new UsersService(prisma as never, notifications as never);
