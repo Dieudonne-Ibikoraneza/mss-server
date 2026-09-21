@@ -1,3 +1,4 @@
+import { bestEffort } from '@/redis/best-effort';
 import { RedisService } from '@/redis/redis.service';
 
 export const PRODUCTS_LIST_CACHE_PREFIX = 'cache:products:list:';
@@ -9,8 +10,10 @@ export async function invalidateProductsCache(
   redis: RedisService,
   productIds: string[],
 ): Promise<void> {
-  await Promise.all([
-    redis.delByPrefix(PRODUCTS_LIST_CACHE_PREFIX),
-    ...productIds.map((id) => redis.delByPrefix(productDetailCachePrefix(id))),
-  ]);
+  await bestEffort('clear the product cache', () =>
+    Promise.all([
+      redis.delByPrefix(PRODUCTS_LIST_CACHE_PREFIX),
+      ...productIds.map((id) => redis.delByPrefix(productDetailCachePrefix(id))),
+    ]),
+  );
 }

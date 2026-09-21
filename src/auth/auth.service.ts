@@ -178,10 +178,16 @@ export class AuthService {
       throw unauthorized('auth.accountNotActive', 'This account is not active.');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
+    // Single winner: the token is spent by whichever request flips `revokedAt` first. Two
+    // requests holding the same token used to both pass the check above and each be handed
+    // a fresh pair; now only one gets tokens and the other is told the token is spent.
+    const claimed = await this.prisma.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (claimed.count === 0) {
+      throw unauthorized('auth.refreshTokenInvalid', 'Refresh token is invalid or expired.');
+    }
 
     return this.issueTokens(user.id, user.role);
   }

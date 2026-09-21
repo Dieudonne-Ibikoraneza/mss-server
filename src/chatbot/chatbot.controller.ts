@@ -25,7 +25,10 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto } from './dto/media-preview.dto';
 import { UpdateKnowledgeBaseEntryDto, UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
-import { RecommendationDecisionDto } from './dto/recommendation-decision.dto';
+import {
+  RecommendationBatchDecisionDto,
+  RecommendationDecisionDto,
+} from './dto/recommendation-decision.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
 
@@ -74,6 +77,7 @@ export class ChatbotController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Compare products via the assistant' })
   @Post('compare')
   compareProducts(@Body() dto: CompareProductsDto, @CurrentUser() user?: AuthenticatedUser) {
@@ -115,13 +119,16 @@ export class ChatbotController {
       },
     }),
   )
-  uploadRoomPhoto(@UploadedFile() file?: Express.Multer.File) {
+  uploadRoomPhoto(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser('id') userId: string,
+  ) {
     if (!file)
       throw badRequest(
         'chatbot.roomPhotoRequired',
         'A room photo is required in the "file" field.',
       );
-    return this.chatbotService.uploadRoomPhoto(file);
+    return this.chatbotService.uploadRoomPhoto(file, userId);
   }
 
   @ApiBearerAuth()
@@ -134,6 +141,24 @@ export class ChatbotController {
   @Post('preview/image')
   generateImagePreview(@Body() dto: ImagePreviewDto, @CurrentUser('id') userId: string) {
     return this.chatbotService.generateImagePreview(dto, userId);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Record feedback on several of your recommendations at once (one card)',
+    description:
+      'All-or-nothing: every id must be one of yours, and either all are updated or none are.',
+  })
+  @Patch('recommendations')
+  setRecommendationDecisions(
+    @Body() dto: RecommendationBatchDecisionDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.chatbotService.setRecommendationDecisions(
+      dto.recommendationIds,
+      dto.decision,
+      userId,
+    );
   }
 
   @ApiBearerAuth()

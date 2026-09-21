@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { notFound } from '@/common/errors/app-error';
+import { forbidden, notFound } from '@/common/errors/app-error';
 import {
   ChatRole,
   Language,
@@ -461,6 +461,33 @@ export class ChatbotService {
   }
 
   /**
+   * The same feedback for several recommendations in one all-or-nothing write — a multi-pick
+   * card (floor + wall) used to be several requests, and a partial failure left the picks
+   * disagreeing about what the customer said. Every id must be the caller's.
+   */
+  async setRecommendationDecisions(
+    ids: string[],
+    decision: RecommendationDecision,
+    userId: string,
+  ) {
+    const unique = [...new Set(ids)];
+    const owned = await this.prisma.recommendation.count({
+      where: { id: { in: unique }, userId },
+    });
+    if (owned !== unique.length) {
+      throw notFound('chatbot.recommendationNotFound', 'Recommendation not found.');
+    }
+    await this.prisma.recommendation.updateMany({
+      where: { id: { in: unique }, userId },
+      data: {
+        decision,
+        decidedAt: decision === RecommendationDecision.PENDING ? null : new Date(),
+      },
+    });
+    return { ids: unique, decision };
+  }
+
+  /**
    * Reattaches each assistant turn's recommended products (and the batch's
    * like/dislike, if any) via `Recommendation.messageId` — without this, a
    * reloaded conversation showed the assistant's text ("here are three tile
@@ -640,24 +667,35 @@ export class ChatbotService {
       }),
     );
 
-    await Promise.all(
-      dto.productIds.map((productId) =>
-        this.events.recordTileEvent({
-          userId,
-          sessionId: dto.sessionId,
-          productId,
-          type: 'COMPARED',
-          metadata: { comparedWith: dto.productIds.filter((id) => id !== productId) },
-        }),
-      ),
-    );
+    await this.events.recordPublicComparison({
+      userId,
+      role: viewerRole,
+      sessionId: dto.sessionId,
+      productIds: dto.productIds,
+    });
 
     return { products };
   }
 
   /** Persists the customer's own room photo — see `POST /chatbot/preview/room-photo`. */
-  async uploadRoomPhoto(file: Express.Multer.File) {
-    return this.storage.uploadRoomPhoto(file);
+  async uploadRoomPhoto(file: Express.Multer.File, userId: string) {
+    return this.storage.uploadRoomPhoto(file, userId);
+  }
+
+  /**
+   * A room photo can only be used by the customer who uploaded it: uploads are filed under
+   * `rooms/<owner id>/`, and the path submitted for a preview must be exactly one of those.
+   * Without this, anyone who learned another customer's storage path could have the server
+   * fetch that photo with its own storage credentials.
+   */
+  private assertOwnRoomPhoto(path: string, userId: string) {
+    const own = new RegExp(`^rooms/${userId}/[A-Za-z0-9-]+\\.[A-Za-z0-9]+$`);
+    if (!own.test(path)) {
+      throw forbidden(
+        'chatbot.roomPhotoNotYours',
+        'That room photo was not uploaded by your account. Upload it again and retry.',
+      );
+    }
   }
 
   /**
@@ -670,6 +708,7 @@ export class ChatbotService {
    */
   async generateImagePreview(dto: ImagePreviewDto, userId: string) {
     await this.resolveOwnedConversation(dto.conversationId, userId);
+    this.assertOwnRoomPhoto(dto.roomImagePath, userId);
 
     const product = await this.prisma.product.findUnique({
       where: { id: dto.productId },

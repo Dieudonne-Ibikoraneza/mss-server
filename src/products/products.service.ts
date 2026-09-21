@@ -1,3 +1,4 @@
+import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { badRequest, conflict, notFound } from '@/common/errors/app-error';
 import { Language, Prisma, Role, StockMovementType } from '@prisma/client';
@@ -434,12 +435,16 @@ export class ProductsService {
     );
 
     await invalidateProductsCache(this.redis, [productId]);
-    await this.notifications.notifyLowStock([productId]);
+    await bestEffort('send the low-stock alert', () =>
+      this.notifications.notifyLowStock([productId]),
+    );
     // Stock coming in can be exactly what a waitlisted order (doc-driven
     // feature, no doc section number yet) was missing — a correction/damage
     // adjustment (negative changeAreaSqm) never frees anything, so skip it.
     if (dto.changeAreaSqm > 0) {
-      await this.orders.promoteWaitlistedOrders([productId]);
+      await bestEffort('promote waitlisted orders', () =>
+        this.orders.promoteWaitlistedOrders([productId]),
+      );
     }
     return updated;
   }

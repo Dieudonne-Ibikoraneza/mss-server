@@ -104,9 +104,16 @@ export class StorageService {
    * use) so it can be re-shown on a reloaded conversation and re-sent to the
    * image model without asking the customer to upload it again.
    */
-  async uploadRoomPhoto(file: Express.Multer.File) {
+  async uploadRoomPhoto(file: Express.Multer.File, ownerId: string) {
     await this.ensureBucket(ROOM_PHOTOS_BUCKET);
-    return this.uploadImage(file.buffer, file.mimetype, ROOM_PHOTOS_BUCKET, 'rooms', 'room photo');
+    // Filed under the owner's id, so a path alone says whose photo it is.
+    return this.uploadImage(
+      file.buffer,
+      file.mimetype,
+      ROOM_PHOTOS_BUCKET,
+      `rooms/${ownerId}`,
+      'room photo',
+    );
   }
 
   /**

@@ -137,6 +137,41 @@ export class EventsService {
     }
   }
 
+  /**
+   * One "compared" event per product in a comparison, for the public compare screen. Like the
+   * other public writers it ignores staff and counts a given set of products once per minute
+   * per visitor — refreshing or hammering the endpoint cannot inflate the numbers.
+   */
+  async recordPublicComparison(input: {
+    userId?: string | null;
+    role?: Role;
+    sessionId: string;
+    productIds: string[];
+  }) {
+    if (isStaffRole(input.role)) return;
+    const identity = input.userId ?? input.sessionId;
+    const set = [...input.productIds].sort().join(',');
+    const dedupKey = `events:dedup:compare:${identity}:${set}`;
+    if (!(await this.redis.setIfAbsent(dedupKey, '1', TILE_DEDUP_TTL_SECONDS.COMPARED))) return;
+
+    try {
+      await Promise.all(
+        input.productIds.map((productId) =>
+          this.recordTileEvent({
+            userId: input.userId,
+            sessionId: input.sessionId,
+            productId,
+            type: TileEventType.COMPARED,
+            metadata: { comparedWith: input.productIds.filter((id) => id !== productId) },
+          }),
+        ),
+      );
+    } catch (error) {
+      await this.redis.del(dedupKey);
+      throw error;
+    }
+  }
+
   recordTileEvent(input: RecordTileEventInput) {
     if (isStaffRole(input.role)) return Promise.resolve(null);
     return this.prisma.tileEvent.create({

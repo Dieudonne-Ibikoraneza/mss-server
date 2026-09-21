@@ -1,3 +1,4 @@
+import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { notFound } from '@/common/errors/app-error';
 import { Language, Role } from '@prisma/client';
@@ -94,7 +95,9 @@ export class CollectionsService {
         descriptionRw: translated.description ?? null,
       },
     });
-    await this.redis.delByPrefix(LIST_CACHE_PREFIX);
+    await bestEffort('clear the collection list cache', () =>
+      this.redis.delByPrefix(LIST_CACHE_PREFIX),
+    );
     return collection;
   }
 
@@ -137,20 +140,24 @@ export class CollectionsService {
         descriptionRw: finalDescriptionRw,
       },
     });
-    await Promise.all([
-      this.redis.delByPrefix(LIST_CACHE_PREFIX),
-      this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
-    ]);
+    await bestEffort('clear the collection cache', () =>
+      Promise.all([
+        this.redis.delByPrefix(LIST_CACHE_PREFIX),
+        this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
+      ]),
+    );
     return collection;
   }
 
   async remove(id: string) {
     await this.assertExists(id);
     await this.prisma.collection.update({ where: { id }, data: { isActive: false } });
-    await Promise.all([
-      this.redis.delByPrefix(LIST_CACHE_PREFIX),
-      this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
-    ]);
+    await bestEffort('clear the collection cache', () =>
+      Promise.all([
+        this.redis.delByPrefix(LIST_CACHE_PREFIX),
+        this.redis.del(`${DETAIL_CACHE_PREFIX}${id}`),
+      ]),
+    );
   }
 
   private async withImageUrls<T extends { image: string | null }>(collections: T[]) {

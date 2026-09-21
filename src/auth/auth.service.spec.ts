@@ -187,7 +187,7 @@ describe('AuthService — account status enforcement', () => {
     it('rotates the token pair for an active user', async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(storedToken);
       prisma.user.findUnique.mockResolvedValue(baseUser);
-      prisma.refreshToken.update.mockResolvedValue({});
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
       prisma.refreshToken.create.mockResolvedValue({});
 
       const result = await service.refresh('some-refresh-token');
@@ -197,10 +197,22 @@ describe('AuthService — account status enforcement', () => {
         refreshToken: expect.any(String),
         refreshExpiresAt: expect.any(Date),
       });
-      expect(prisma.refreshToken.update).toHaveBeenCalledWith({
-        where: { id: storedToken.id },
+      // Spent with a conditional claim, so a second request with the same token cannot also rotate.
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { id: storedToken.id, revokedAt: null },
         data: { revokedAt: expect.any(Date) },
       });
+    });
+
+    it('a request that loses the claim gets no new tokens', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(storedToken);
+      prisma.user.findUnique.mockResolvedValue(baseUser);
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.refresh('some-refresh-token')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
     it.each([UserStatus.INACTIVE, UserStatus.SUSPENDED])(

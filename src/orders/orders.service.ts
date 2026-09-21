@@ -1210,12 +1210,12 @@ export class OrdersService {
       await invalidateProductsCache(this.redis, productIds);
     }
     if (deductsStock) {
-      await this.notifications.notifyLowStock(productIds);
+      await this.bestEffort('low-stock alert', () => this.notifications.notifyLowStock(productIds));
     }
     if (returnsStock || releasesReservation) {
       // Stock came back (a cancelled paid order) or a hold lapsed — either
       // way there may now be room to promote a waitlisted order.
-      await this.promoteWaitlistedOrders(productIds);
+      await this.bestEffort('waitlist promotion', () => this.promoteWaitlistedOrders(productIds));
     }
 
     return result;
@@ -1442,7 +1442,7 @@ export class OrdersService {
     await invalidateProductsCache(this.redis, productIds);
     // A smaller revision, or a held order falling back to the waitlist, frees
     // stock — and a revised waitlisted order may now be next in line for it.
-    await this.promoteWaitlistedOrders(productIds);
+    await this.bestEffort('waitlist promotion', () => this.promoteWaitlistedOrders(productIds));
     return this.findOne(id, actingUser);
   }
 
@@ -1919,14 +1919,14 @@ export class OrdersService {
       await invalidateProductsCache(this.redis, productIds);
     }
     if (deductsStock) {
-      await this.notifications.notifyLowStock(productIds);
+      await this.bestEffort('low-stock alert', () => this.notifications.notifyLowStock(productIds));
     }
     if (releasesReservation) {
       // Releasing the hold and deducting the same area in one go leaves
       // `available` (on-hand − reserved) unchanged, so there is rarely new
       // room here — but a hold that had already lapsed (reservation cleared
       // when staff advanced the status earlier) still frees this on-hand up.
-      await this.promoteWaitlistedOrders(productIds);
+      await this.bestEffort('waitlist promotion', () => this.promoteWaitlistedOrders(productIds));
     }
 
     // Best-effort, same as `notifyLowStock` — a mail failure must never
