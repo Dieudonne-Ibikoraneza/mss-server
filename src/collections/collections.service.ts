@@ -9,7 +9,7 @@ import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { CreateCollectionDto } from './dto/create-collection.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
-import { QueryCollectionsDto } from './dto/query-collections.dto';
+import { CollectionSort, QueryCollectionsDto } from './dto/query-collections.dto';
 import { COLLECTION_IMAGES_BUCKET, StorageService } from '@/storage/storage.service';
 import { TranslationService } from '@/translation/translation.service';
 
@@ -29,15 +29,20 @@ export class CollectionsService {
   ) {}
 
   async findAll(query: QueryCollectionsDto) {
-    const cacheKey = `${LIST_CACHE_PREFIX}page=${query.page}:limit=${query.limit}`;
+    const cacheKey = `${LIST_CACHE_PREFIX}page=${query.page}:limit=${query.limit}:search=${query.search ?? ''}:size=${query.size ?? ''}:sort=${query.sort ?? ''}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return cached;
 
-    const where = { isActive: true };
+    const where = {
+      isActive: true,
+      size: query.size,
+      title: query.search ? { contains: query.search, mode: 'insensitive' as const } : undefined,
+    };
     const [items, total] = await Promise.all([
       this.prisma.collection.findMany({
         where,
-        orderBy: { createdAt: 'asc' },
+        include: { _count: { select: { products: { where: { isActive: true } } } } },
+        orderBy: { createdAt: query.sort === CollectionSort.OLDEST ? 'asc' : 'desc' },
         skip: query.skip,
         take: query.limit,
       }),

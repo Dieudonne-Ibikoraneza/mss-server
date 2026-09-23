@@ -27,6 +27,11 @@ export class QueryProductsDto extends PaginationDto {
   @IsEnum(SuitableFor)
   suitableFor?: SuitableFor;
 
+  /** Surface compatibility: FLOOR also includes BOTH, likewise WALL. */
+  @IsOptional()
+  @IsEnum(SuitableFor)
+  compatibleWith?: SuitableFor;
+
   @IsOptional()
   @IsString()
   search?: string;

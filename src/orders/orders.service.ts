@@ -1032,7 +1032,29 @@ export class OrdersService {
       quotationStatus: query.quotationStatus,
       customerId: isStaff ? query.customerId : actingUser.id,
       createdByType: query.createdByType,
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? {
+              gte: query.createdFrom ? new Date(query.createdFrom) : undefined,
+              lte: query.createdTo ? new Date(query.createdTo) : undefined,
+            }
+          : undefined,
+      OR: query.search
+        ? [
+            { orderNumber: { contains: query.search, mode: 'insensitive' } },
+            { customer: { fullName: { contains: query.search, mode: 'insensitive' } } },
+          ]
+        : undefined,
     };
+
+    const orderBy: Prisma.OrderOrderByWithRelationInput =
+      query.sort === 'oldest'
+        ? { createdAt: 'asc' }
+        : query.sort === 'amount_high'
+          ? { total: 'desc' }
+          : query.sort === 'amount_low'
+            ? { total: 'asc' }
+            : { createdAt: 'desc' };
 
     const [items, total] = await Promise.all([
       this.prisma.order.findMany({
@@ -1043,7 +1065,7 @@ export class OrdersService {
         include: ORDER_INCLUDE,
         skip: query.skip,
         take: query.limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
       }),
       this.prisma.order.count({ where }),
     ]);
