@@ -47,7 +47,12 @@ import {
 /** Shape persisted into `ChatMessage.attachments` for the "put this tile on my
  * floor" feature — read back by `getHistory` on every reload, and by nothing
  * else, so it's safe to reshape freely as the feature grows. */
-type RoomPhotoAttachment = { kind: 'room-photo'; path: string };
+type RoomPhotoAttachment = {
+  kind: 'room-photo';
+  path: string;
+  tileName?: string;
+  tileImage?: string;
+};
 type RoomTilePreviewAttachment = {
   kind: 'room-tile-preview';
   roomImagePath: string;
@@ -58,6 +63,22 @@ type RoomTilePreviewAttachment = {
 
 /** How many active products to ground the assistant with — enough choice without bloating the prompt. */
 const MAX_CANDIDATE_PRODUCTS = 40;
+
+/** Conservative gate for recommendation batches. Contextual questions stay
+ * text-only even when the conversation already contains a complete brief. */
+export const requestsNewRecommendations = (message: string) => {
+  const text = message.trim().toLowerCase();
+  return [
+    /\b(?:recommend|suggest)\s+(?:me\s+)?(?:(?:some|the)\s+)?(?:\d+\s+)?(?:best\s+)?(?:tiles?|slabs?|products?|options?)/,
+    /\b(?:show|give|find|get)\s+me\b.*\b(?:tiles?|slabs?|products?|options?|recommendations?)\b/,
+    /\b(?:bring|provide|display|list|present)\b.*\b(?:tiles?|slabs?|products?|options?|recommendations?)\b/,
+    /\bwhat\s+(?:tiles?|products?)\b.*\b(?:best|suitable|ideal|recommend)/,
+    /\bwhich\s+(?:tiles?|products?)\b.*\brecommend\b/,
+    /\b(?:best|ideal|suitable)\s+(?:tiles?|products?)\b/,
+    /\b(?:i\s+(?:need|want)|i(?:'m| am)\s+looking\s+for)\b.*\b(?:tiles?|slabs?|products?|options?)\b/,
+    /\b(?:other|different|more|alternative|new)\s+(?:tiles?|products?|options?|recommendations?)\b/,
+  ].some((pattern) => pattern.test(text));
+};
 /** Length cap for the auto-derived "project" title shown in the customer's conversation list. */
 const MAX_TITLE_CHARS = 80;
 const DEFAULT_PROJECT_TITLE = 'New Project';
@@ -189,6 +210,7 @@ export class ChatbotService {
       ),
     }));
 
+    const allowRecommendations = requestsNewRecommendations(dto.content);
     const { reply, picks } = await this.chatProvider.reply({
       messages: history.map((m) => ({ role: m.role, content: m.content })),
       language: conversation.language,
@@ -197,6 +219,7 @@ export class ChatbotService {
         question: entry.question,
         answer: entry.answer,
       })),
+      allowRecommendations,
     });
 
     const assistantMessage = await this.prisma.chatMessage.create({
@@ -204,7 +227,7 @@ export class ChatbotService {
     });
 
     const products = await this.persistAndResolveRecommendations(
-      picks,
+      allowRecommendations ? picks : [],
       candidateProducts,
       conversation.userId ?? userId,
       dto.sessionId,
@@ -627,10 +650,16 @@ export class ChatbotService {
     const kind = (attachments as { kind?: string }).kind;
 
     if (kind === 'room-photo') {
-      const { path } = attachments as unknown as RoomPhotoAttachment;
+      const { path, tileName, tileImage } = attachments as unknown as RoomPhotoAttachment;
       return {
         kind: 'room-photo' as const,
         url: await this.resolveProductImage(path, ROOM_PHOTOS_BUCKET),
+        ...(tileName && tileImage
+          ? {
+              tileName,
+              tileImageUrl: await this.resolveProductImage(tileImage),
+            }
+          : {}),
       };
     }
 
@@ -741,6 +770,8 @@ export class ChatbotService {
         attachments: {
           kind: 'room-photo',
           path: dto.roomImagePath,
+          tileName: product.name,
+          tileImage: product.image,
         } satisfies RoomPhotoAttachment,
       },
     });
@@ -831,7 +862,12 @@ export class ChatbotService {
         role: userMessage.role,
         content: userMessage.content,
         createdAt: userMessage.createdAt,
-        attachment: { kind: 'room-photo' as const, url: roomImageUrl },
+        attachment: {
+          kind: 'room-photo' as const,
+          url: roomImageUrl,
+          tileName: product.name,
+          tileImageUrl: await this.resolveProductImage(product.image),
+        },
       },
       assistantMessage: {
         id: assistantMessage.id,

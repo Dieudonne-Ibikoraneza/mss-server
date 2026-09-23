@@ -38,6 +38,9 @@ export interface ChatProviderReplyInput {
   candidates: ChatProductCandidate[];
   /** Store Q&A pairs to ground general questions the model shouldn't have to guess at. */
   knowledgeBase: { question: string; answer: string }[];
+  /** True only when the latest customer turn explicitly asks for a fresh
+   * product selection, rather than discussing products already shown. */
+  allowRecommendations: boolean;
 }
 
 export interface ChatProviderReplyResult {
