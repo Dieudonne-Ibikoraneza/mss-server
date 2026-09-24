@@ -1,5 +1,5 @@
 import { OrderCreatorType, OrderStatus, QuotationStatus } from '@prisma/client';
-import { IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
 import { PaginationDto } from '@/common/dto/pagination.dto';
 
 export class QueryOrdersDto extends PaginationDto {
@@ -19,4 +19,20 @@ export class QueryOrdersDto extends PaginationDto {
   @IsOptional()
   @IsUUID()
   customerId?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsDateString()
+  createdFrom?: string;
+
+  @IsOptional()
+  @IsDateString()
+  createdTo?: string;
+
+  @IsOptional()
+  @IsEnum(['newest', 'oldest', 'amount_high', 'amount_low'])
+  sort?: 'newest' | 'oldest' | 'amount_high' | 'amount_low' = 'newest';
 }

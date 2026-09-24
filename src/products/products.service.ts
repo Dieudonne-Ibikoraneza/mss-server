@@ -1,7 +1,7 @@
 import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { badRequest, conflict, notFound } from '@/common/errors/app-error';
-import { Language, Prisma, Role, StockMovementType } from '@prisma/client';
+import { Language, Prisma, Role, StockMovementType, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -151,6 +151,7 @@ export class ProductsService {
       `${PRODUCTS_LIST_CACHE_PREFIX}${roleBucket(viewerRole)}:` +
       `page=${query.page}:limit=${query.limit}:collectionId=${query.collectionId ?? ''}:` +
       `size=${query.size ?? ''}:suitableFor=${query.suitableFor ?? ''}:` +
+      `compatibleWith=${query.compatibleWith ?? ''}:` +
       `roomType=${query.roomType ?? ''}:search=${query.search ?? ''}:sort=${query.sort ?? ''}`;
     const cached = await this.redis.cacheGet(cacheKey);
     if (cached) return cached;
@@ -161,7 +162,21 @@ export class ProductsService {
       collection: query.size ? { size: query.size } : undefined,
       suitableFor: query.suitableFor,
       roomTypes: query.roomType ? { has: query.roomType } : undefined,
-      name: query.search ? { contains: query.search, mode: 'insensitive' } : undefined,
+      AND: [
+        query.search
+          ? {
+              OR: [
+                { name: { contains: query.search, mode: 'insensitive' } },
+                { sku: { contains: query.search, mode: 'insensitive' } },
+              ],
+            }
+          : {},
+        query.compatibleWith && query.compatibleWith !== SuitableFor.BOTH
+          ? { suitableFor: { in: [query.compatibleWith, SuitableFor.BOTH] } }
+          : query.compatibleWith === SuitableFor.BOTH
+            ? { suitableFor: SuitableFor.BOTH }
+            : {},
+      ],
     };
 
     const [items, total, threshold] = await Promise.all([
