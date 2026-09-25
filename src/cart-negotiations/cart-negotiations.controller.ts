@@ -6,7 +6,10 @@ import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { PaginationDto } from '@/common/dto/pagination.dto';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { CartNegotiationsService } from './cart-negotiations.service';
-import { CreateCartNegotiationDto } from './dto/create-cart-negotiation.dto';
+import {
+  CreateCartNegotiationDto,
+  OpenCartNegotiationDto,
+} from './dto/create-cart-negotiation.dto';
 import { CreateCartNegotiationMessageDto } from './dto/create-cart-negotiation-message.dto';
 
 /**
@@ -29,6 +32,13 @@ export class CartNegotiationsController {
   @Post()
   submit(@Body() dto: CreateCartNegotiationDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.submit(dto, user);
+  }
+
+  @Roles(Role.CLIENT)
+  @ApiOperation({ summary: 'Open the stock-team chat without starting checkout' })
+  @Post('open')
+  open(@Body() dto: OpenCartNegotiationDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.open(dto, user);
   }
 
   @ApiOperation({ summary: "The calling customer's own negotiation thread, if any" })

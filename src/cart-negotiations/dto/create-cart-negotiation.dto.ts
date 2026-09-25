@@ -39,13 +39,15 @@ export class CartNegotiationItemDto {
   availabilityNote: string;
 }
 
-export class CreateCartNegotiationDto {
+export class CartNegotiationItemsDto {
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => CartNegotiationItemDto)
   items: CartNegotiationItemDto[];
+}
 
+export class CreateCartNegotiationDto extends CartNegotiationItemsDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(2000)
@@ -61,3 +63,6 @@ export class CreateCartNegotiationDto {
   @IsBoolean()
   snapshot?: boolean;
 }
+
+/** Opens the persistent chat without requiring checkout or delivery details. */
+export class OpenCartNegotiationDto extends CartNegotiationItemsDto {}

@@ -5,7 +5,10 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { PaginationDto, paginate } from '@/common/dto/pagination.dto';
 import { NegotiationsGateway } from '@/negotiations/negotiations.gateway';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
-import { CreateCartNegotiationDto } from './dto/create-cart-negotiation.dto';
+import {
+  CreateCartNegotiationDto,
+  OpenCartNegotiationDto,
+} from './dto/create-cart-negotiation.dto';
 import { CreateCartNegotiationMessageDto } from './dto/create-cart-negotiation-message.dto';
 
 const STAFF_ROLES: Role[] = [Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN];
@@ -179,6 +182,57 @@ export class CartNegotiationsService {
     // Push the tail of the thread (system note + the customer's own message)
     // so a stock manager already watching the inbox sees it appear live.
     for (const message of negotiation.messages.slice(-2)) {
+      this.negotiations.emitMessage('cart', negotiationId, message);
+    }
+    return this.presentFor(negotiation, actingUser);
+  }
+
+  /** Opens the persistent customer chat directly from a shortage notice, before checkout. */
+  async open(dto: OpenCartNegotiationDto, actingUser: AuthenticatedUser) {
+    const existing = await this.prisma.cartNegotiation.findFirst({
+      where: { customerId: actingUser.id },
+      orderBy: { createdAt: 'desc' },
+      include: { messages: { select: { id: true }, take: 1 } },
+    });
+    const negotiationId =
+      existing?.id ??
+      (await this.prisma.cartNegotiation.create({ data: { customerId: actingUser.id } })).id;
+    const items = [...new Map(dto.items.map((item) => [item.productId, item])).values()];
+    const productSummary = items
+      .map((item) => `${item.productName} (${item.requestedAreaSqm} sqm)`)
+      .join('; ');
+    const openingMessage = `Hello, this product is not available in your full requested quantity right now: ${productSummary}. Our stock team will review what we can supply now and when the remaining quantity can become available. We will assist you here before you need to provide delivery details or place an order.`;
+
+    await this.prisma.$transaction([
+      this.prisma.cartNegotiationItem.deleteMany({ where: { negotiationId } }),
+      this.prisma.cartNegotiationItem.createMany({
+        data: items.map((item) => ({
+          negotiationId,
+          productId: item.productId,
+          productName: item.productName,
+          requestedAreaSqm: item.requestedAreaSqm,
+          availabilityNote: item.availabilityNote,
+        })),
+      }),
+      ...(existing?.messages.length
+        ? []
+        : [
+            this.prisma.cartNegotiationMessage.create({
+              data: { negotiationId, author: OrderMessageAuthor.STAFF, body: openingMessage },
+              include: { sender: { select: { id: true, fullName: true, role: true } } },
+            }),
+          ]),
+      this.prisma.cartNegotiation.update({
+        where: { id: negotiationId },
+        data: { updatedAt: new Date(), customerClearedAt: null },
+      }),
+    ]);
+
+    const negotiation = await this.prisma.cartNegotiation.findUniqueOrThrow({
+      where: { id: negotiationId },
+      include: DETAIL_INCLUDE,
+    });
+    for (const message of negotiation.messages.slice(-1)) {
       this.negotiations.emitMessage('cart', negotiationId, message);
     }
     return this.presentFor(negotiation, actingUser);

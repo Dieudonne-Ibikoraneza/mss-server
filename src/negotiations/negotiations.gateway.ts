@@ -127,6 +127,11 @@ export class NegotiationsGateway implements OnGatewayInit, OnGatewayConnection {
       if (!this.isStaff(user.role) && order.customerId !== user.id) {
         throw new WsException('You do not have access to this order.');
       }
+      if (!this.isStaff(user.role) && order.createdByType === 'STAFF') {
+        throw new WsException(
+          'This staff-assisted order does not expose the stock-team conversation.',
+        );
+      }
       return;
     }
 
