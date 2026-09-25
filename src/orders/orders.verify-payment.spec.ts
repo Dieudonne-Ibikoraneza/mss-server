@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- `expect.objectContaining(...)` matchers are typed `any` */
-import { BadRequestException, ConflictException } from '@nestjs/common';
-import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { OrderCreatorType, OrderStatus, QuotationStatus, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { OrdersService } from './orders.service';
 
@@ -22,6 +22,7 @@ describe('OrdersService#verifyPayment — a single winner', () => {
     quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
     stockDeductedAt: null,
     reservationExpiresAt: new Date(Date.now() + 60_000),
+    createdByType: OrderCreatorType.STAFF,
     customer: { email: null },
     items: [item],
   };
@@ -110,5 +111,34 @@ describe('OrdersService#verifyPayment — a single winner', () => {
     const { service, tx } = build(1);
     tx.$executeRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0); // release ok, deduction matched no row
     await expect(service.verifyPayment('o1', staff)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('lets sales verify payment for a staff-created order', async () => {
+    const { service, tx } = build(1);
+    tx.order.findUniqueOrThrow.mockResolvedValue({ id: 'o1' });
+    jest.spyOn(service, 'promoteWaitlistedOrders').mockResolvedValue(undefined);
+
+    await expect(
+      service.verifyPayment('o1', {
+        id: 'sales-1',
+        role: Role.SALES_PERSON,
+      } as AuthenticatedUser),
+    ).resolves.toBeDefined();
+  });
+
+  it('does not let sales verify a customer-created order', async () => {
+    const { service } = build(1);
+    const prisma = (service as unknown as { prisma: { order: { findUnique: jest.Mock } } }).prisma;
+    prisma.order.findUnique.mockResolvedValue({
+      ...order,
+      createdByType: OrderCreatorType.CUSTOMER,
+    });
+
+    await expect(
+      service.verifyPayment('o1', {
+        id: 'sales-1',
+        role: Role.SALES_PERSON,
+      } as AuthenticatedUser),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

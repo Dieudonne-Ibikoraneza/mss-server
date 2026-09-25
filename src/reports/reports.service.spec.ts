@@ -14,6 +14,9 @@ describe('ReportsService — lowStock', () => {
     sku: `SKU-${id}`,
     image: `products/${id}.webp`,
     quantityOnHandSqm,
+    price: 9500,
+    updatedAt: new Date('2026-09-26T00:00:00Z'),
+    collection: { size: '30×30cm' },
   });
 
   beforeEach(() => {

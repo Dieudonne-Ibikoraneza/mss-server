@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- `expect.objectContaining(...)` matchers are typed `any` */
-import { BadRequestException, ConflictException } from '@nestjs/common';
-import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { OrderCreatorType, OrderStatus, QuotationStatus, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { OrdersService } from './orders.service';
 
@@ -178,6 +178,28 @@ describe('OrdersService — the payment window runs from the quotation, and neve
         service.sendQuotation('order-1', { transportFee: 5 }, staff),
       ).rejects.toBeInstanceOf(ConflictException);
     });
+
+    it('lets sales quote an order that staff created for the customer', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingHeld,
+        createdByType: OrderCreatorType.STAFF,
+      });
+
+      await expect(
+        service.sendQuotation('order-1', { transportFee: 5 }, user(Role.SALES_PERSON)),
+      ).resolves.toBeDefined();
+    });
+
+    it('does not let sales take over the quotation of a customer-created order', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingHeld,
+        createdByType: OrderCreatorType.CUSTOMER,
+      });
+
+      await expect(
+        service.sendQuotation('order-1', { transportFee: 5 }, user(Role.SALES_PERSON)),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
   });
 
   describe('markPaymentSubmitted', () => {
@@ -201,6 +223,33 @@ describe('OrdersService — the payment window runs from the quotation, and neve
           }),
         }),
       );
+    });
+
+    it('lets staff record an in-person payment on a staff-created order without a customer view', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...sent,
+        createdByType: OrderCreatorType.STAFF,
+        quotationViewedAt: null,
+      });
+
+      await service.markPaymentSubmitted('order-1', user(Role.SALES_PERSON));
+
+      expect(prisma.order.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.not.objectContaining({ quotationViewedAt: expect.anything() }),
+        }),
+      );
+    });
+
+    it('does not let staff record payment for a customer-created order', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...sent,
+        createdByType: OrderCreatorType.CUSTOMER,
+      });
+
+      await expect(
+        service.markPaymentSubmitted('order-1', user(Role.SALES_PERSON)),
+      ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('only accepts payment for the exact quotation version the customer viewed', async () => {
