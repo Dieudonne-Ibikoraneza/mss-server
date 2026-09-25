@@ -23,7 +23,7 @@ export class OrdersController {
 
   // The data analyst is read-only: every order write below names its roles, so
   // that role is refused at the route (and again in `OrdersService`).
-  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
+  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.ADMIN)
   @ApiOperation({ summary: 'Create an order' })
   @Post()
   create(@Body() dto: CreateOrderDto, @CurrentUser() user: AuthenticatedUser) {
@@ -45,8 +45,8 @@ export class OrdersController {
     return this.ordersService.findOne(id, user);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER, Role.SALES_PERSON)
-  @ApiOperation({ summary: 'Update order status (admin/stock/sales)' })
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiOperation({ summary: 'Update order status (admin/stock)' })
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,
@@ -82,10 +82,7 @@ export class OrdersController {
   }
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
-  @ApiOperation({
-    summary: 'Set the transport fee and send the quotation (admin/stock)',
-    description: 'A transport fee of 0 is valid and means free delivery.',
-  })
+  @ApiOperation({ summary: 'Set the transport fee and send the quotation (admin/stock)' })
   @Post(':id/quotation')
   sendQuotation(
     @Param('id') id: string,
@@ -114,8 +111,8 @@ export class OrdersController {
     res.send(pdf);
   }
 
-  @Roles(Role.CLIENT, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.ADMIN)
-  @ApiOperation({ summary: 'Mark the quotation as paid (customer)' })
+  @Roles(Role.CLIENT, Role.SALES_PERSON)
+  @ApiOperation({ summary: 'Record payment (customer or sales staff)' })
   @Post(':id/quotation/payment-submitted')
   markPaymentSubmitted(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.markPaymentSubmitted(id, user);
@@ -137,7 +134,9 @@ export class OrdersController {
   }
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
-  @ApiOperation({ summary: 'Verify a submitted payment (admin/stock)' })
+  @ApiOperation({
+    summary: 'Verify a submitted payment (admin/stock, or sales for staff-created orders)',
+  })
   @Post(':id/quotation/verify')
   verifyPayment(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.verifyPayment(id, user);

@@ -274,6 +274,16 @@ export class OrdersService {
     }
   }
 
+  private assertCanCreateOrders(actingUser: AuthenticatedUser) {
+    if (actingUser.role === Role.STOCK_MANAGER) {
+      throw forbidden(
+        'orders.stockManagerCannotCreate',
+        'Stock managers cannot create new orders. Sales staff or administrators must create them.',
+      );
+    }
+    this.assertCanWriteOrders(actingUser);
+  }
+
   private async assertAccess(orderId: string, actingUser: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) throw notFound('orders.notFound', 'Order not found.');
@@ -663,7 +673,7 @@ export class OrdersService {
     actingUser: AuthenticatedUser,
     attempt = 1,
   ): Promise<Awaited<ReturnType<OrdersService['createOnce']>>> {
-    this.assertCanWriteOrders(actingUser);
+    this.assertCanCreateOrders(actingUser);
     try {
       return await this.createOnce(dto, actingUser);
     } catch (error) {
@@ -1089,6 +1099,12 @@ export class OrdersService {
   }
 
   async updateStatus(id: string, dto: UpdateOrderStatusDto, actingUser: AuthenticatedUser) {
+    if (actingUser.role !== Role.ADMIN && actingUser.role !== Role.STOCK_MANAGER) {
+      throw forbidden(
+        'orders.onlyStockTeamCanDoThis',
+        'Only the stock team or an administrator can update order status.',
+      );
+    }
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: { items: { include: { product: true } } },
@@ -1521,13 +1537,15 @@ export class OrdersService {
 
   // --- Quotation workflow ----------------------------------------------------
 
-  private assertCanManageQuotation(actingUser: AuthenticatedUser) {
-    if (!QUOTATION_ROLES.includes(actingUser.role)) {
-      throw forbidden(
-        'orders.onlyStockTeamCanDoThis',
-        'Only the stock team or an administrator can do this.',
-      );
-    }
+  private assertCanManageQuotation(
+    actingUser: AuthenticatedUser,
+    order: { createdByType: OrderCreatorType },
+  ) {
+    if (QUOTATION_ROLES.includes(actingUser.role)) return;
+    throw forbidden(
+      'orders.onlyStockTeamCanDoThis',
+      'Only the stock team or an administrator can create or manage a quotation.',
+    );
   }
 
   /** Cancelled is terminal — nothing about the order (delivery, quotation, status) can change after it. */
@@ -1545,12 +1563,12 @@ export class OrdersService {
    * the fee has been edited is allowed, but not once payment is already in flight.
    */
   async sendQuotation(id: string, dto: SendQuotationDto, actingUser: AuthenticatedUser) {
-    this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: { customer: true, delivery: true },
     });
     if (!order) throw notFound('orders.notFound', 'Order not found.');
+    this.assertCanManageQuotation(actingUser, order);
     this.assertNotCancelled(order);
     if (order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED) {
       throw badRequest(
@@ -1712,18 +1730,27 @@ export class OrdersService {
     });
   }
 
-  /** The customer telling us they have paid — verification is a separate, staff-side step. */
+  /** The customer, or staff handling a staff-created order in person, records payment; verification stays a separate audited step. */
   async markPaymentSubmitted(id: string, actingUser: AuthenticatedUser) {
     this.assertCanWriteOrders(actingUser);
     const order = await this.assertAccess(id, actingUser);
     this.assertNotCancelled(order);
+    const isCustomer = actingUser.id === order.customerId;
+    const isAssistedStaffPayment =
+      actingUser.role === Role.SALES_PERSON && order.createdByType === OrderCreatorType.STAFF;
+    if (!isCustomer && !isAssistedStaffPayment) {
+      throw forbidden(
+        'orders.staffPaymentOnlyForStaffCreated',
+        'Staff can record payment on the customer’s behalf only for a staff-created order.',
+      );
+    }
     if (order.quotationStatus !== QuotationStatus.QUOTATION_SENT) {
       throw badRequest(
         'orders.paymentNeedsQuotation',
         'Payment can only be submitted once a quotation has been sent for this order.',
       );
     }
-    if (!order.quotationViewedAt) {
+    if (!isAssistedStaffPayment && !order.quotationViewedAt) {
       throw badRequest(
         'orders.viewQuotationFirst',
         'View the quotation first, then confirm your payment.',
@@ -1740,7 +1767,7 @@ export class OrdersService {
         quotationStatus: QuotationStatus.QUOTATION_SENT,
         // The version the customer viewed is the version they're paying.
         quotationSentAt: order.quotationSentAt,
-        quotationViewedAt: { not: null },
+        ...(isAssistedStaffPayment ? {} : { quotationViewedAt: { not: null } }),
       },
       data: {
         quotationStatus: QuotationStatus.PAYMENT_SUBMITTED,
@@ -1767,12 +1794,12 @@ export class OrdersService {
    * the same moment leaves one outcome, never both.
    */
   async rejectPayment(id: string, dto: RejectPaymentDto, actingUser: AuthenticatedUser) {
-    this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: { customer: true },
     });
     if (!order) throw notFound('orders.notFound', 'Order not found.');
+    this.assertCanManageQuotation(actingUser, order);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
       throw badRequest(
@@ -1849,12 +1876,12 @@ export class OrdersService {
   }
 
   async verifyPayment(id: string, actingUser: AuthenticatedUser) {
-    this.assertCanManageQuotation(actingUser);
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: { items: { include: { product: true } }, customer: true },
     });
     if (!order) throw notFound('orders.notFound', 'Order not found.');
+    this.assertCanManageQuotation(actingUser, order);
     this.assertNotCancelled(order);
     if (order.quotationStatus !== QuotationStatus.PAYMENT_SUBMITTED) {
       throw badRequest(
@@ -2003,7 +2030,9 @@ export class OrdersService {
 
   async listMessages(id: string, actingUser: AuthenticatedUser) {
     this.assertCanUseNegotiation(actingUser);
-    await this.assertAccess(id, actingUser);
+    const order = await this.assertAccess(id, actingUser);
+    if (actingUser.role === Role.CLIENT && order.createdByType === OrderCreatorType.STAFF)
+      return [];
     const messages = await this.prisma.orderMessage.findMany({
       where: { orderId: id },
       include: { sender: { select: { id: true, fullName: true, role: true } } },
@@ -2029,7 +2058,13 @@ export class OrdersService {
 
   async postMessage(id: string, dto: CreateOrderMessageDto, actingUser: AuthenticatedUser) {
     this.assertCanUseNegotiation(actingUser);
-    await this.assertAccess(id, actingUser);
+    const order = await this.assertAccess(id, actingUser);
+    if (actingUser.role === Role.CLIENT && order.createdByType === OrderCreatorType.STAFF) {
+      throw forbidden(
+        'orders.negotiationsNotForCustomer',
+        'This staff-assisted order does not expose the stock-team conversation to the customer.',
+      );
+    }
     const author = STAFF_ROLES.includes(actingUser.role)
       ? OrderMessageAuthor.STAFF
       : OrderMessageAuthor.CUSTOMER;
