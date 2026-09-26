@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
+import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryCustomersDto, QueryStaffDto } from './dto/query-users.dto';
 import { PaginationDto } from '@/common/dto/pagination.dto';
@@ -23,7 +24,8 @@ export class UsersController {
     return this.usersService.findById(user.id);
   }
 
-  @ApiOperation({ summary: 'Update the current user profile' })
+  @Roles(Role.CLIENT)
+  @ApiOperation({ summary: 'Update the current customer profile' })
   @Patch('me')
   updateMe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
     return this.usersService.updateProfile(user.id, dto);
@@ -34,6 +36,7 @@ export class UsersController {
     description:
       'Deactivates the account and revokes every session. Order and payment history is retained, so the account is switched off rather than erased.',
   })
+  @Roles(Role.CLIENT)
   @Delete('me')
   deleteMe(@CurrentUser() user: AuthenticatedUser) {
     return this.usersService.closeOwnAccount(user.id);
@@ -46,8 +49,8 @@ export class UsersController {
       "Stock managers place orders on a customer's behalf; analysts need it for customer-level insight.",
   })
   @Get('customers')
-  listCustomers(@Query() query: QueryCustomersDto) {
-    return this.usersService.listCustomers(query);
+  listCustomers(@Query() query: QueryCustomersDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.listCustomers(query, user.role);
   }
 
   @Roles(Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER, Role.DATA_ANALYST)
@@ -55,8 +58,19 @@ export class UsersController {
     summary: 'Get one customer with spend summary and recent orders (admin/sales/stock/analyst)',
   })
   @Get('customers/:id')
-  findCustomer(@Param('id') id: string, @Query() query: PaginationDto) {
-    return this.usersService.findCustomer(id, query.page, query.limit);
+  findCustomer(
+    @Param('id') id: string,
+    @Query() query: PaginationDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.usersService.findCustomer(id, query.page, query.limit, user.role);
+  }
+
+  @Roles(Role.ADMIN, Role.SALES_PERSON)
+  @ApiOperation({ summary: 'Create a customer on behalf of a walk-in customer' })
+  @Post('customers')
+  createCustomer(@Body() dto: CreateCustomerDto) {
+    return this.usersService.createCustomer(dto);
   }
 
   @Roles(Role.ADMIN)

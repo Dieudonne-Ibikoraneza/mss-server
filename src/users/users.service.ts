@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { badRequest, conflict, notFound } from '@/common/errors/app-error';
-import { OrderStatus, Prisma, QuotationStatus, Role, UserStatus } from '@prisma/client';
+import { Language, OrderStatus, Prisma, QuotationStatus, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { paginate } from '@/common/dto/pagination.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
+import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto, QueryCustomersDto } from './dto/query-users.dto';
 
@@ -183,6 +184,42 @@ export class UsersService {
     return staff;
   }
 
+  async createCustomer(dto: CreateCustomerDto) {
+    const identifiers = [
+      dto.email ? { email: dto.email } : null,
+      dto.phone ? { phone: dto.phone } : null,
+    ].filter((value): value is { email: string } | { phone: string } => value !== null);
+
+    if (identifiers.length) {
+      const existing = await this.prisma.user.findFirst({ where: { OR: identifiers } });
+      if (existing)
+        throw conflict('auth.accountExists', 'An account with this email or phone already exists.');
+    }
+
+    const customer = await this.prisma.user.create({
+      data: {
+        fullName: dto.fullName.trim(),
+        email: dto.email,
+        phone: dto.phone,
+        language: dto.language ?? Language.EN,
+        heardAboutUs: dto.heardAboutUs,
+        role: Role.CLIENT,
+        status: UserStatus.ACTIVE,
+        emailVerifiedAt: dto.email ? new Date() : undefined,
+        phoneVerifiedAt: dto.phone ? new Date() : undefined,
+      },
+      select: SAFE_USER_SELECT,
+    });
+
+    return {
+      ...customer,
+      orderCount: 0,
+      lifetimeSpend: 0,
+      firstOrderAt: null,
+      lastOrderAt: null,
+    };
+  }
+
   /** Shared existence + role guard for the staff-only mutations below. */
   private async findStaffById(id: string) {
     const staff = await this.prisma.user.findFirst({
@@ -262,7 +299,7 @@ export class UsersService {
    * shows. Aggregated in one grouped query rather than per row, so the page
    * stays a fixed number of round trips regardless of page size.
    */
-  async listCustomers(query: QueryCustomersDto) {
+  async listCustomers(query: QueryCustomersDto, viewerRole?: Role) {
     const where: Prisma.UserWhereInput = {
       role: Role.CLIENT,
       status: query.status,
@@ -301,7 +338,14 @@ export class UsersService {
         .sort((a, b) => b.lifetimeSpend - a.lifetimeSpend);
 
       const page = withStats.slice(query.skip, query.skip + query.limit);
-      return paginate(page, withStats.length, query.page, query.limit);
+      return paginate(
+        page.map((customer) =>
+          viewerRole === Role.SALES_PERSON ? { ...customer, lifetimeSpend: undefined } : customer,
+        ),
+        withStats.length,
+        query.page,
+        query.limit,
+      );
     }
 
     const [items, total] = await Promise.all([
@@ -335,7 +379,14 @@ export class UsersService {
       };
     });
 
-    return paginate(withStats, total, query.page, query.limit);
+    return paginate(
+      withStats.map((customer) =>
+        viewerRole === Role.SALES_PERSON ? { ...customer, lifetimeSpend: undefined } : customer,
+      ),
+      total,
+      query.page,
+      query.limit,
+    );
   }
 
   /** A single customer with their spend summary and recent orders, for the detail screen. */
@@ -349,7 +400,7 @@ export class UsersService {
    * every order regardless of status, matching what the unfiltered list
    * below actually returns.
    */
-  async findCustomer(id: string, page = 1, limit = 10) {
+  async findCustomer(id: string, page = 1, limit = 10, viewerRole?: Role) {
     const customer = await this.prisma.user.findFirst({
       where: { id, role: Role.CLIENT },
       select: SAFE_USER_SELECT,
@@ -379,7 +430,8 @@ export class UsersService {
     return {
       ...customer,
       orderCount: aggregate._count._all,
-      lifetimeSpend: Number(aggregate._sum.total ?? 0),
+      lifetimeSpend:
+        viewerRole === Role.SALES_PERSON ? undefined : Number(aggregate._sum.total ?? 0),
       firstOrderAt: aggregate._min.createdAt ?? null,
       lastOrderAt: aggregate._max.createdAt ?? null,
       favoriteCount: favorites,
