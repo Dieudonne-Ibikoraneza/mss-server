@@ -96,7 +96,13 @@ export class AuthService {
       return this.genericOtpResponse();
     }
 
-    return this.otp.send(dto.email, 'email', 'login', user.language);
+    const language = dto.language ?? user.language;
+    // A visitor may choose a language before signing into an existing account.
+    // Remember that explicit choice so this OTP and all later notifications use it.
+    if (dto.language && dto.language !== user.language) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { language } });
+    }
+    return this.otp.send(dto.email, 'email', 'login', language);
   }
 
   /** Resends whichever code is currently pending: a registration code, or a login code. */
@@ -118,7 +124,11 @@ export class AuthService {
       return this.genericOtpResponse();
     }
 
-    return this.otp.send(dto.email, 'email', 'login', user.language);
+    const language = dto.language ?? user.language;
+    if (dto.language && dto.language !== user.language) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { language } });
+    }
+    return this.otp.send(dto.email, 'email', 'login', language);
   }
 
   /** Verifies the OTP and either completes a pending registration or logs an existing user in. */
