@@ -108,7 +108,16 @@ export class ReportsService {
     const [products, lowStockThreshold] = await Promise.all([
       this.prisma.product.findMany({
         where: { isActive: true },
-        select: { id: true, name: true, sku: true, image: true, quantityOnHandSqm: true },
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          image: true,
+          quantityOnHandSqm: true,
+          price: true,
+          updatedAt: true,
+          collection: { select: { size: true } },
+        },
       }),
       getLowStockThreshold(this.prisma),
     ]);
@@ -129,6 +138,9 @@ export class ReportsService {
         name: row.name,
         sku: row.sku,
         image: await this.storage.resolveImageUrl(row.image),
+        size: row.collection.size,
+        price: Number(row.price),
+        updatedAt: row.updatedAt,
         quantityOnHandSqm: row.quantityOnHandSqm,
         lowStockThreshold,
         stockStatus: stockStatusOf(row.quantityOnHandSqm, lowStockThreshold),
