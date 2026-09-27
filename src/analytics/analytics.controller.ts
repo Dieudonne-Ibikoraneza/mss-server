@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { AnalyticsService } from './analytics.service';
 import { QueryAnalyticsDto } from './dto/query-analytics.dto';
 import { QueryTilesDto } from './dto/query-tiles.dto';
+import { QueryRecommendationsDto } from './dto/query-recommendations.dto';
 
 /**
  * Doc 3.9 dashboards, structured around four domains — Customers, Sales,
@@ -36,8 +37,21 @@ export class AnalyticsController {
     description: 'Also reachable by SALES_PERSON, for their own Overview screen.',
   })
   @Get('overview')
-  overview(@Query() query: QueryAnalyticsDto) {
-    return this.analyticsService.overview(query.period);
+  overview(@Query() query: QueryAnalyticsDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService
+      .overview(query.period)
+      .then((result) =>
+        user.role === Role.SALES_PERSON
+          ? {
+              ...result,
+              totalSales: undefined,
+              totalTransportFees: undefined,
+              averageOrderValue: undefined,
+              totalInventoryValue: undefined,
+              revenueTrend: [],
+            }
+          : result,
+      );
   }
 
   @ApiOperation({
@@ -54,8 +68,25 @@ export class AnalyticsController {
     description: 'Also reachable by SALES_PERSON, for their own Sales screen.',
   })
   @Get('sales')
-  sales(@Query() query: QueryAnalyticsDto) {
-    return this.analyticsService.sales(query.period);
+  sales(@Query() query: QueryAnalyticsDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService.sales(query.period).then((result) =>
+      user.role === Role.SALES_PERSON
+        ? {
+            ...result,
+            totalSales: undefined,
+            totalTransportFees: undefined,
+            previousTotalSales: undefined,
+            percentChangeVsLastPeriod: undefined,
+            averageOrderValue: undefined,
+            trend: [],
+            byStatus: result.byStatus.map(({ status, count }) => ({ status, count })),
+            bestSellingTiles: result.bestSellingTiles.map(({ revenue, ...tile }) => tile),
+            topPerformer: result.topPerformer
+              ? { ...result.topPerformer, revenue: undefined }
+              : null,
+          }
+        : result,
+    );
   }
 
   @ApiOperation({
@@ -73,7 +104,7 @@ export class AnalyticsController {
     summary: 'AI recommendation performance: summary + per-tile table, one period-scoped call',
   })
   @Get('tiles/recommendations')
-  tileRecommendations(@Query() query: QueryTilesDto) {
+  tileRecommendations(@Query() query: QueryRecommendationsDto) {
     return this.analyticsService.tileRecommendations(query);
   }
 
