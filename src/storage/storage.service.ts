@@ -16,6 +16,8 @@ export const RECOMMENDATION_IMAGES_BUCKET = 'RecommendationVisuals';
  * `RECOMMENDATION_IMAGES_BUCKET` even though both feed the same feature. */
 export const ROOM_PHOTOS_BUCKET = 'RoomPhotos';
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
+const SIGNED_URL_CACHE_SECONDS = 50 * 60;
+const MAX_CONCURRENT_SIGNED_URL_REQUESTS = 8;
 /**
  * Catalog photos and AI-generated visuals only ever get shown as a ~96px
  * sidebar thumbnail or a tiled 3D wall/floor texture — never at their
@@ -36,6 +38,12 @@ export class StorageService {
    * network round trip on every single upload, for a check that basically
    * never needs redoing once it's passed. */
   private readonly confirmedBuckets = new Set<string>();
+  /** Signed URLs are reused across the several dashboard queries that render the same catalogue. */
+  private readonly signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+  /** Multiple concurrent responses often ask for the same image; share one provider request. */
+  private readonly signedUrlInFlight = new Map<string, Promise<string>>();
+  private signedUrlRequests = 0;
+  private readonly signedUrlWaiters: (() => void)[] = [];
 
   constructor(private readonly config: ConfigService) {
     const driver = this.config.get<string>('storage.driver');
@@ -252,21 +260,62 @@ export class StorageService {
       );
     }
 
-    const { data, error } = await this.supabase.storage
-      .from(bucket)
-      .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+    const key = `${bucket}:${path}`;
+    const cached = this.signedUrlCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.url;
 
-    if (error || !data?.signedUrl) {
-      this.logger.error(
-        `Could not create an access URL for "${path}": ${error?.message ?? 'unknown error'}`,
+    const existing = this.signedUrlInFlight.get(key);
+    if (existing) return existing;
+
+    const request = this.createSignedUrl(path, bucket, key);
+    this.signedUrlInFlight.set(key, request);
+    return request;
+  }
+
+  private async createSignedUrl(path: string, bucket: string, key: string): Promise<string> {
+    await this.acquireSignedUrlSlot();
+    try {
+      const { data, error } = await this.supabase!.storage.from(bucket).createSignedUrl(
+        path,
+        SIGNED_URL_TTL_SECONDS,
       );
-      throw serviceUnavailable(
-        'storage.accessUrlFailed',
-        'Could not open this file right now. Please try again.',
-      );
+
+      if (error || !data?.signedUrl) {
+        this.logger.error(
+          `Could not create an access URL for "${path}": ${error?.message ?? 'unknown error'}`,
+        );
+        throw serviceUnavailable(
+          'storage.accessUrlFailed',
+          'Could not open this file right now. Please try again.',
+        );
+      }
+
+      this.signedUrlCache.set(key, {
+        url: data.signedUrl,
+        expiresAt: Date.now() + SIGNED_URL_CACHE_SECONDS * 1000,
+      });
+      return data.signedUrl;
+    } finally {
+      this.releaseSignedUrlSlot();
+      this.signedUrlInFlight.delete(key);
     }
+  }
 
-    return data.signedUrl;
+  private acquireSignedUrlSlot(): Promise<void> {
+    if (this.signedUrlRequests < MAX_CONCURRENT_SIGNED_URL_REQUESTS) {
+      this.signedUrlRequests += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.signedUrlWaiters.push(resolve));
+  }
+
+  private releaseSignedUrlSlot(): void {
+    const next = this.signedUrlWaiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.signedUrlRequests = Math.max(0, this.signedUrlRequests - 1);
   }
 
   /**
