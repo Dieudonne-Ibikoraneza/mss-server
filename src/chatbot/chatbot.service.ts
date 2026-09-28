@@ -211,7 +211,7 @@ export class ChatbotService {
     }));
 
     const allowRecommendations = requestsNewRecommendations(dto.content);
-    const { reply, picks } = await this.chatProvider.reply({
+    const { reply, picks, roomType } = await this.chatProvider.reply({
       messages: history.map((m) => ({ role: m.role, content: m.content })),
       language: conversation.language,
       candidates,
@@ -233,6 +233,7 @@ export class ChatbotService {
       dto.sessionId,
       assistantMessage.id,
       history.map((message) => `${message.role}: ${message.content}`).join('\n'),
+      roomType,
     );
 
     // Logged only now that this turn's own outcome is known: a message sent
@@ -275,6 +276,7 @@ export class ChatbotService {
     sessionId: string,
     assistantMessageId: string,
     customerBrief: string,
+    roomType?: 'BATHROOM' | 'KITCHEN',
   ) {
     if (picks.length === 0) return [];
 
@@ -317,6 +319,7 @@ export class ChatbotService {
       resolved.map(async ({ product, wallProduct }, index) =>
         this.recommendationImageProvider.generate({
           customerBrief,
+          roomType,
           product: {
             name: product.name,
             description: product.description,

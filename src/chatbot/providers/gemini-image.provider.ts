@@ -52,16 +52,37 @@ export class GeminiImageProvider implements RecommendationImageProvider {
     }
 
     if (wallReference && input.wallProduct) {
+      // Keep the explicit model classification as the source of truth, but
+      // defensively recover it from the latest brief for older/provider
+      // responses that do not include roomType yet.
+      const brief = input.customerBrief.toLowerCase();
+      const kitchenAt = Math.max(brief.lastIndexOf('kitchen'), brief.lastIndexOf('igikoni'));
+      const bathroomAt = Math.max(brief.lastIndexOf('bathroom'), brief.lastIndexOf('ubwiherero'));
+      const roomType =
+        input.roomType ??
+        (kitchenAt > bathroomAt && kitchenAt >= 0
+          ? 'KITCHEN'
+          : bathroomAt > kitchenAt && bathroomAt >= 0
+            ? 'BATHROOM'
+            : undefined);
+      const room =
+        roomType === 'KITCHEN' ? 'kitchen' : roomType === 'BATHROOM' ? 'bathroom' : 'interior room';
+      const roomRestrictions =
+        roomType === 'KITCHEN'
+          ? 'This must be unmistakably a kitchen. Do not generate a bathroom, shower, bathtub, toilet, bathroom vanity, or bathroom-only mirror scene.'
+          : roomType === 'BATHROOM'
+            ? 'This must be unmistakably a bathroom, with appropriate bathroom fixtures.'
+            : 'Use the room type and layout described by the customer; do not assume it is a bathroom.';
       return callGeminiImageModel(this.logger, this.apiKey, this.model, [
         {
-          text: `Create a photorealistic interior-design visualization of a bathroom for this two-tile recommendation.
+          text: `Create a photorealistic interior-design visualization of a ${room} for this two-tile recommendation.
 Customer brief: ${input.customerBrief.slice(-MAX_BRIEF_CHARS)}
 Floor tile (FIRST attached photo): ${input.product.name} (${input.product.collection}, ${input.product.size}). ${input.product.description ?? ''}
 ${sizeInstruction('floor tile', input.product.size)}
 Wall tile (SECOND attached photo): ${input.wallProduct.name} (${input.wallProduct.collection}, ${input.wallProduct.size}). ${input.wallProduct.description ?? ''}
 ${sizeInstruction('wall tile', input.wallProduct.size)}
 
-Tile the entire visible floor with the FIRST tile. Tile the wall with the SECOND tile only up to a common half-height wainscot proportion — roughly the lower half of the wall (about 1.2–1.5m up from the floor), with a clean, straight edge (e.g. a trim/bullnose line) where the tiled wall meets the plain painted wall above it. Do not tile the full wall height. Preserve each tile's true color, pattern, and finish exactly as shown in its reference photo, but its on-screen scale must come from its stated real size above, never from the reference photo's proportions. Be attentive and deliberate about this: the floor tile and wall tile have their own distinct real sizes, and mixing them up or eyeballing either one is a mistake. Include the customer's requested room layout, fixtures, lighting, and mood as described in the brief, and make sure the finished room genuinely matches that brief. Do not show a product-card, text, labels, logos, swatches, or a collage; generate one finished bathroom scene only.`,
+Tile the entire visible floor with the FIRST tile. Tile the wall with the SECOND tile only up to a common half-height wainscot proportion — roughly the lower half of the wall (about 1.2–1.5m up from the floor), with a clean, straight edge (e.g. a trim/bullnose line) where the tiled wall meets the plain painted wall above it. Do not tile the full wall height. Preserve each tile's true color, pattern, and finish exactly as shown in its reference photo, but its on-screen scale must come from its stated real size above, never from the reference photo's proportions. Be attentive and deliberate about this: the floor tile and wall tile have their own distinct real sizes, and mixing them up or eyeballing either one is a mistake. Include the customer's requested room layout, fixtures, lighting, and mood as described in the brief, and make sure the finished room genuinely matches that brief. ${roomRestrictions} Do not show a product-card, text, labels, logos, swatches, or a collage; generate one finished ${room} scene only.`,
         },
         { inlineData: { mimeType: reference.mimeType, data: reference.data } },
         { inlineData: { mimeType: wallReference.mimeType, data: wallReference.data } },

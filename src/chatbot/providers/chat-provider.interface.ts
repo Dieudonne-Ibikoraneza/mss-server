@@ -47,6 +47,8 @@ export interface ChatProviderReplyResult {
   reply: string;
   /** Empty when the conversation doesn't yet warrant a recommendation. */
   picks: ChatRecommendationPick[];
+  /** Room context used for recommendation scene generation. */
+  roomType?: 'BATHROOM' | 'KITCHEN';
 }
 
 export interface ChatProvider {

@@ -3,6 +3,8 @@ export const RECOMMENDATION_IMAGE_PROVIDER = Symbol('RECOMMENDATION_IMAGE_PROVID
 export interface RecommendationImageInput {
   /** The conversation context, including the room and style details supplied by the customer. */
   customerBrief: string;
+  /** Explicit room context so paired kitchen tiles are not rendered as bathrooms. */
+  roomType?: 'BATHROOM' | 'KITCHEN';
   /** The floor tile (or the sole tile, outside a bathroom combo). */
   product: {
     name: string;
@@ -11,7 +13,7 @@ export interface RecommendationImageInput {
     size: string;
     imageUrl: string;
   };
-  /** Present only for a bathroom floor+wall combo — a second, different tile
+  /** Present only for a floor+wall combo — a second, different tile
    * to render installed on the lower portion of the wall alongside `product`
    * on the floor, in the same scene. */
   wallProduct?: {
