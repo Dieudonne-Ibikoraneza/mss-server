@@ -1,7 +1,7 @@
 import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { badRequest, conflict, notFound } from '@/common/errors/app-error';
-import { Language, Prisma, Role, StockMovementType, SuitableFor } from '@prisma/client';
+import { Language, Prisma, Role, RoomType, StockMovementType, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -147,21 +147,41 @@ export class ProductsService {
   }
 
   async findAll(query: QueryProductsDto, viewerRole?: Role) {
+    const sizes =
+      query.sizes?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+    const roomTypes = query.roomTypes?.split(',').filter(Boolean) ?? [];
+    const suitableFors = (query.suitableFors?.split(',').filter(Boolean) ?? []) as SuitableFor[];
+    const stockStatuses = query.stockStatuses?.split(',').filter(Boolean) ?? [];
+    const requestedStockStatuses = stockStatuses.length
+      ? stockStatuses
+      : query.stockStatus
+        ? [query.stockStatus]
+        : [];
     const cacheKey =
       `${PRODUCTS_LIST_CACHE_PREFIX}${roleBucket(viewerRole)}:` +
       `page=${query.page}:limit=${query.limit}:collectionId=${query.collectionId ?? ''}:` +
       `size=${query.size ?? ''}:suitableFor=${query.suitableFor ?? ''}:` +
       `compatibleWith=${query.compatibleWith ?? ''}:` +
-      `roomType=${query.roomType ?? ''}:search=${query.search ?? ''}:sort=${query.sort ?? ''}`;
+      `roomType=${query.roomType ?? ''}:stockStatus=${query.stockStatus ?? ''}:` +
+      `search=${query.search ?? ''}:sort=${query.sort ?? ''}:sizes=${sizes.join(',')}:` +
+      `roomTypes=${roomTypes.join(',')}:suitableFors=${suitableFors.join(',')}:` +
+      `stockStatuses=${requestedStockStatuses.join(',')}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return cached;
 
     const where: Prisma.ProductWhereInput = {
       isActive: true,
       collectionId: query.collectionId,
-      collection: query.size ? { size: query.size } : undefined,
+      collection:
+        query.size || sizes.length
+          ? { size: sizes.length ? { in: sizes } : query.size }
+          : undefined,
       suitableFor: query.suitableFor,
-      roomTypes: query.roomType ? { has: query.roomType } : undefined,
+      roomTypes: roomTypes.length
+        ? { hasSome: roomTypes as RoomType[] }
+        : query.roomType
+          ? { has: query.roomType }
+          : undefined,
       AND: [
         query.search
           ? {
@@ -176,6 +196,7 @@ export class ProductsService {
           : query.compatibleWith === SuitableFor.BOTH
             ? { suitableFor: SuitableFor.BOTH }
             : {},
+        suitableFors.length ? { suitableFor: { in: suitableFors } } : {},
       ],
     };
 
@@ -183,22 +204,54 @@ export class ProductsService {
       this.prisma.product.findMany({
         where,
         include: { collection: true },
-        skip: query.skip,
-        take: query.limit,
+        skip: requestedStockStatuses.length ? undefined : query.skip,
+        take: requestedStockStatuses.length ? undefined : query.limit,
         orderBy: ProductsService.ORDER_BY[query.sort ?? ProductSort.NEWEST],
       }),
       this.prisma.product.count({ where }),
       getLowStockThreshold(this.prisma),
     ]);
 
+    // Stock status is derived from on-hand minus reservations, so Prisma
+    // cannot express it as a normal column predicate. Filter the lightweight
+    // database rows first and serialize/sign images only for the requested
+    // page; otherwise a stock filter would recreate the old all-catalogue URL
+    // burst this server pagination is meant to avoid.
+    const matchingItems = requestedStockStatuses.length
+      ? items.filter((item) => {
+          const available = availableAreaSqmOf(
+            Number(item.quantityOnHandSqm),
+            Number(item.reservedAreaSqm),
+          );
+          return requestedStockStatuses.includes(
+            String(stockStatusOf(available, threshold)),
+          );
+        })
+      : items;
+    const rawPageItems = requestedStockStatuses.length
+      ? matchingItems.slice(query.skip, query.skip + query.limit)
+      : matchingItems;
+    const pageItems = await Promise.all(
+      rawPageItems.map((item) => this.serialize(item, threshold, viewerRole)),
+    );
     const result = paginate(
-      await Promise.all(items.map((item) => this.serialize(item, threshold, viewerRole))),
-      total,
+      pageItems,
+      requestedStockStatuses.length ? matchingItems.length : total,
       query.page,
       query.limit,
     );
     await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
+  }
+
+  async filterOptions() {
+    const collections = await this.prisma.collection.findMany({
+      where: { products: { some: { isActive: true } } },
+      select: { size: true },
+      distinct: ['size'],
+      orderBy: { size: 'asc' },
+    });
+    return { sizes: collections.map((collection) => collection.size) };
   }
 
   async findOne(id: string, viewerRole?: Role) {

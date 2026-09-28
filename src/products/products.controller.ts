@@ -83,6 +83,13 @@ export class ProductsController {
     return this.productsService.findAll(query, user?.role);
   }
 
+  @Public()
+  @ApiOperation({ summary: 'List product filter options' })
+  @Get('filter-options')
+  filterOptions() {
+    return this.productsService.filterOptions();
+  }
+
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
   @ApiBearerAuth()
   @ApiOperation({

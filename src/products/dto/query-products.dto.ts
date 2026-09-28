@@ -1,5 +1,5 @@
 import { RoomType, SuitableFor } from '@prisma/client';
-import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
 import { PaginationDto } from '@/common/dto/pagination.dto';
 
 /** Matches the catalog's sort control: newest arrivals, price low→high, price high→low. */
@@ -7,6 +7,12 @@ export enum ProductSort {
   NEWEST = 'newest',
   PRICE_ASC = 'price_asc',
   PRICE_DESC = 'price_desc',
+}
+
+export enum ProductStockStatus {
+  IN_STOCK = 'in_stock',
+  LOW_STOCK = 'low_stock',
+  OUT_OF_STOCK = 'out_of_stock',
 }
 
 export class QueryProductsDto extends PaginationDto {
@@ -39,4 +45,32 @@ export class QueryProductsDto extends PaginationDto {
   @IsOptional()
   @IsEnum(ProductSort)
   sort?: ProductSort = ProductSort.NEWEST;
+
+  @IsOptional()
+  @IsEnum(ProductStockStatus)
+  stockStatus?: ProductStockStatus;
+
+  /** Comma-separated catalog filter selections (OR within each group). */
+  @IsOptional()
+  @IsString()
+  sizes?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(
+    /^(LIVING_ROOM|BEDROOM|BATHROOM|KITCHEN)(,(LIVING_ROOM|BEDROOM|BATHROOM|KITCHEN))*$/,
+  )
+  roomTypes?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(FLOOR|WALL|BOTH)(,(FLOOR|WALL|BOTH))*$/)
+  suitableFors?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(
+    /^(in_stock|low_stock|out_of_stock)(,(in_stock|low_stock|out_of_stock))*$/,
+  )
+  stockStatuses?: string;
 }
