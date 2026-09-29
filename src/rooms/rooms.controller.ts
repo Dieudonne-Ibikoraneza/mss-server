@@ -1,22 +1,31 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { badRequest } from '@/common/errors/app-error';
 import { Public } from '@/common/decorators/public.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
 import { RoomsService } from './rooms.service';
-import { CreateRoomDto } from './dto/create-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
 import { ListSharedDesignsDto } from './dto/list-shared-designs.dto';
+import { StorageService } from '@/storage/storage.service';
+
+const ROOM_THUMBNAIL_MAX_SIZE = 10 * 1024 * 1024;
+const ROOM_THUMBNAIL_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 const STAFF_ROLES: Role[] = [Role.ADMIN, Role.SALES_PERSON, Role.STOCK_MANAGER];
 
 @ApiTags('rooms')
 @Controller('rooms')
 export class RoomsController {
-  constructor(private readonly roomsService: RoomsService) {}
+  constructor(
+    private readonly roomsService: RoomsService,
+    private readonly storageService: StorageService,
+  ) {}
 
   @Public()
   @ApiOperation({ summary: 'List room templates' })
@@ -35,29 +44,32 @@ export class RoomsController {
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a room template (admin only)' })
-  @Post()
-  createRoom(@Body() dto: CreateRoomDto) {
-    return this.roomsService.createRoom(dto);
+  @ApiOperation({ summary: 'Upload a 3D room thumbnail (admin only)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
+  @Post('upload-thumbnail')
+  @UseInterceptors(FileInterceptor('file', {
+    storage: memoryStorage(),
+    limits: { fileSize: ROOM_THUMBNAIL_MAX_SIZE },
+    fileFilter: (_request, file, callback) => {
+      if (!ROOM_THUMBNAIL_MIME_TYPES.includes(file.mimetype)) {
+        callback(badRequest('upload.imageTypeNotAllowed', 'Only JPEG, PNG, and WebP images are allowed.'), false);
+        return;
+      }
+      callback(null, true);
+    },
+  }))
+  uploadThumbnail(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw badRequest('upload.imageRequired', 'An image file is required in the "file" field.');
+    return this.storageService.uploadRoomThumbnail(file);
   }
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update a room template, including publish/hide (admin only)' })
+  @ApiOperation({ summary: 'Update a room thumbnail (admin only)' })
   @Patch(':id')
   updateRoom(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
     return this.roomsService.updateRoom(id, dto);
-  }
-
-  @Roles(Role.ADMIN)
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: 'Delete a room template (admin only)',
-    description: 'Rejected if any saved customer design still uses it — hide it instead.',
-  })
-  @Delete(':id')
-  deleteRoom(@Param('id') id: string) {
-    return this.roomsService.deleteRoom(id);
   }
 
   @ApiBearerAuth()

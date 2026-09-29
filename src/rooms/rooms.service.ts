@@ -1,16 +1,15 @@
 import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
 import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
-import { Language, Prisma, SuitableFor } from '@prisma/client';
+import { Prisma, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { ProductsService } from '@/products/products.service';
-import { TranslationService } from '@/translation/translation.service';
-import { CreateRoomDto } from './dto/create-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { SaveRoomDesignDto } from './dto/save-room-design.dto';
 import { ListSharedDesignsDto } from './dto/list-shared-designs.dto';
 import { decodeCursor, encodeCursor } from '@/common/utils/cursor';
+import { ROOM_THUMBNAILS_BUCKET, StorageService } from '@/storage/storage.service';
 
 /** Every design read carries its tiles, each tile's product (+ collection), the room, and the owner. */
 const DESIGN_INCLUDE = {
@@ -28,78 +27,30 @@ export class RoomsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsService,
     private readonly products: ProductsService,
-    private readonly translation: TranslationService,
+    private readonly storage: StorageService,
   ) {}
 
-  findAllRooms() {
-    return this.prisma.room.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
+  async findAllRooms() {
+    const rooms = await this.prisma.room.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
+    return Promise.all(rooms.map((room) => this.withThumbnailUrl(room)));
   }
 
   /** Every room template, published or hidden — the admin content-management list (doc 3.10). */
-  findAllRoomsForAdmin() {
-    return this.prisma.room.findMany({ orderBy: { name: 'asc' } });
+  async findAllRoomsForAdmin() {
+    const rooms = await this.prisma.room.findMany({ orderBy: { name: 'asc' } });
+    return Promise.all(rooms.map((room) => this.withThumbnailUrl(room)));
   }
 
-  async createRoom(dto: CreateRoomDto) {
-    // Room templates are admin-authored copy, always in English — no
-    // Kinyarwanda-locale editing surface exists for these (unlike
-    // products/collections), so this direction is always EN -> RW.
-    const translated = await this.translation.translateFields(
-      { name: dto.name, description: dto.description },
-      Language.EN,
-      Language.RW,
-    );
-    return this.prisma.room.create({
-      data: {
-        ...dto,
-        nameRw: translated.name ?? null,
-        descriptionRw: translated.description ?? null,
-      },
-    });
+  private async withThumbnailUrl<T extends { thumbnail: string | null }>(room: T) {
+    if (!room.thumbnail || !room.thumbnail.startsWith('rooms/')) return room;
+    return { ...room, thumbnail: await this.storage.getSignedUrl(room.thumbnail, ROOM_THUMBNAILS_BUCKET) };
   }
 
   async updateRoom(id: string, dto: UpdateRoomDto) {
     const room = await this.prisma.room.findUnique({ where: { id } });
     if (!room) throw notFound('rooms.notFound', 'Room not found.');
-    const translated = await this.translation.translateFields(
-      { name: dto.name, description: dto.description },
-      Language.EN,
-      Language.RW,
-    );
-    return this.prisma.room.update({
-      where: { id },
-      data: { ...dto, nameRw: translated.name, descriptionRw: translated.description },
-    });
-  }
-
-  /**
-   * A room with saved customer designs against it can't be hard-deleted —
-   * `RoomDesign.roomId` has no cascade, so Postgres would just reject it —
-   * and silently cascading those designs away would be worse: they're a
-   * customer's own saved work, not disposable admin content. Hiding it
-   * (`updateRoom` with `isActive: false`) is the real "retire this room"
-   * action; deleting is only for one nobody ever actually used.
-   */
-  async deleteRoom(id: string) {
-    const room = await this.prisma.room.findUnique({ where: { id } });
-    if (!room) throw notFound('rooms.notFound', 'Room not found.');
-
-    const designCount = await this.prisma.roomDesign.count({ where: { roomId: id } });
-    if (designCount > 0) {
-      throw designCount === 1
-        ? badRequest(
-            'rooms.usedByOneDesign',
-            '{{count}} saved customer design still use this room — hide it instead of deleting.',
-            { count: designCount },
-          )
-        : badRequest(
-            'rooms.usedByDesigns',
-            '{{count}} saved customer designs still use this room — hide it instead of deleting.',
-            { count: designCount },
-          );
-    }
-
-    await this.prisma.room.delete({ where: { id } });
+    const updated = await this.prisma.room.update({ where: { id }, data: { thumbnail: dto.thumbnail } });
+    return this.withThumbnailUrl(updated);
   }
 
   /**
@@ -113,6 +64,7 @@ export class RoomsService {
     );
     return {
       ...design,
+      room: design.room ? await this.withThumbnailUrl(design.room) : design.room,
       tiles: design.tiles.map((tile, index) => ({ ...tile, product: serialized[index] })),
     };
   }
