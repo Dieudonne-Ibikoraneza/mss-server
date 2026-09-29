@@ -30,7 +30,6 @@ import {
   ROOM_TILE_EDIT_PROVIDER,
   type RoomTileEditProvider,
 } from './providers/room-tile-provider.interface';
-import { downloadReferenceImage } from './providers/gemini-image-client';
 import { TranslationService } from '@/translation/translation.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
@@ -460,6 +459,7 @@ export class ChatbotService {
   }
 
   private async resolveProductImage(image: string, bucket?: string) {
+    if (!bucket) return this.storage.resolveImageUrl(image);
     // Recovers the bare path if `image` was ever saved as one of our own
     // (possibly expired) signed URLs instead — see `ProductsService`'s
     // identical guard for why. Kept in sync with that one intentionally,
@@ -790,7 +790,7 @@ export class ChatbotService {
 
     const [roomImage, tileImage] = await Promise.all([
       this.storage.downloadImage(dto.roomImagePath, ROOM_PHOTOS_BUCKET),
-      downloadReferenceImage(await this.resolveProductImage(product.image)),
+      this.storage.downloadProductReference(product.image),
     ]);
 
     const generated =

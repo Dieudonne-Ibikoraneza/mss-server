@@ -5,7 +5,8 @@ import type {
   RecommendationImageProvider,
   GeneratedImage,
 } from './recommendation-image.provider';
-import { callGeminiImageModel, downloadReferenceImage } from './gemini-image-client';
+import { callGeminiImageModel } from './gemini-image-client';
+import { StorageService } from '@/storage/storage.service';
 
 const MAX_BRIEF_CHARS = 6_000;
 
@@ -26,7 +27,7 @@ export class GeminiImageProvider implements RecommendationImageProvider {
   private readonly apiKey: string;
   private readonly model: string;
 
-  constructor(config: ConfigService) {
+  constructor(config: ConfigService, private readonly storage: StorageService) {
     this.apiKey =
       config.get<string>('ai.image.apiKey') ?? config.get<string>('ai.chat.apiKey') ?? '';
     this.model = config.get<string>('ai.image.model') ?? 'gemini-3.1-flash-lite-image';
@@ -38,14 +39,14 @@ export class GeminiImageProvider implements RecommendationImageProvider {
       return null;
     }
 
-    const reference = await downloadReferenceImage(input.product.imageUrl);
+    const reference = await this.storage.downloadProductReference(input.product.imageUrl);
     if (!reference) {
       this.logger.warn(`Could not download tile reference for ${input.product.name}.`);
       return null;
     }
 
     const wallReference = input.wallProduct
-      ? await downloadReferenceImage(input.wallProduct.imageUrl)
+      ? await this.storage.downloadProductReference(input.wallProduct.imageUrl)
       : null;
     if (input.wallProduct && !wallReference) {
       this.logger.warn(`Could not download wall tile reference for ${input.wallProduct.name}.`);

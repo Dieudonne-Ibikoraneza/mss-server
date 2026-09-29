@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventsModule } from '@/events/events.module';
 import { StorageModule } from '@/storage/storage.module';
+import { StorageService } from '@/storage/storage.service';
 import { TranslationModule } from '@/translation/translation.module';
 import { ChatbotController } from './chatbot.controller';
 import { ChatbotService } from './chatbot.service';
@@ -36,10 +37,10 @@ import { StubRoomTileProvider } from './providers/room-tile.stub';
     },
     {
       provide: RECOMMENDATION_IMAGE_PROVIDER,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) =>
+      inject: [ConfigService, StorageService],
+      useFactory: (config: ConfigService, storage: StorageService) =>
         (config.get<string>('ai.image.provider') ?? 'stub') === 'gemini'
-          ? new GeminiImageProvider(config)
+          ? new GeminiImageProvider(config, storage)
           : new StubRecommendationImageProvider(),
     },
     {
