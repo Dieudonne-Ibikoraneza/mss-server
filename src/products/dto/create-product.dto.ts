@@ -1,4 +1,4 @@
-import { RoomType, SuitableFor } from '@prisma/client';
+import { RoomType, SuitableFor, VisualizerTilePattern, VisualizerTileCorner } from '@prisma/client';
 import {
   IsArray,
   IsEnum,
@@ -66,6 +66,14 @@ export class CreateProductDto {
 
   @IsEnum(SuitableFor)
   suitableFor: SuitableFor;
+
+  @IsOptional()
+  @IsEnum(VisualizerTilePattern)
+  visualizerPattern?: VisualizerTilePattern;
+
+  @IsOptional()
+  @IsEnum(VisualizerTileCorner)
+  visualizerPatternCorner?: VisualizerTileCorner;
 
   @IsArray()
   @IsEnum(RoomType, { each: true })

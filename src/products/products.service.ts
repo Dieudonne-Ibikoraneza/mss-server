@@ -45,21 +45,14 @@ export class ProductsService {
     private readonly translation: TranslationService,
   ) {}
 
-  /**
-   * A product's `image` is either an absolute URL (seeded/external catalog
-   * photos) or a bare blob path from `StorageService.uploadProductImage`
-   * (e.g. "products/<uuid>.png") — the latter only ever resolves to a real
-   * URL through `StorageService.getSignedUrl`, since the bucket behind it is
-   * private with no public/listable access at all. See
-   * `StorageService.resolveImageUrl` (shared with `AnalyticsService` so
-   * every serializer resolves this the same way).
-   */
+  /** Product images are served as bytes through an opaque application URL. */
   private resolveImageUrl(image: string): Promise<string> {
     return this.storage.resolveImageUrl(image);
   }
 
   private static readonly ORDER_BY: Record<ProductSort, Prisma.ProductOrderByWithRelationInput> = {
     [ProductSort.NEWEST]: { createdAt: 'desc' },
+    [ProductSort.OLDEST]: { createdAt: 'asc' },
     [ProductSort.PRICE_ASC]: { price: 'asc' },
     [ProductSort.PRICE_DESC]: { price: 'desc' },
   };
@@ -148,7 +141,10 @@ export class ProductsService {
 
   async findAll(query: QueryProductsDto, viewerRole?: Role) {
     const sizes =
-      query.sizes?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+      query.sizes
+        ?.split(',')
+        .map((value) => value.trim())
+        .filter(Boolean) ?? [];
     const roomTypes = query.roomTypes?.split(',').filter(Boolean) ?? [];
     const suitableFors = (query.suitableFors?.split(',').filter(Boolean) ?? []) as SuitableFor[];
     const stockStatuses = query.stockStatuses?.split(',').filter(Boolean) ?? [];
@@ -223,9 +219,7 @@ export class ProductsService {
             Number(item.quantityOnHandSqm),
             Number(item.reservedAreaSqm),
           );
-          return requestedStockStatuses.includes(
-            String(stockStatusOf(available, threshold)),
-          );
+          return requestedStockStatuses.includes(String(stockStatusOf(available, threshold)));
         })
       : items;
     const rawPageItems = requestedStockStatuses.length
@@ -295,11 +289,13 @@ export class ProductsService {
           boxCoverageSqm: dto.boxCoverageSqm,
           piecesPerBox: dto.piecesPerBox,
           price: dto.price,
-          image: dto.image,
+          image: this.storage.productImageSource(dto.image),
           description: dto.description,
           nameRw: translated.name ?? null,
           descriptionRw: translated.description ?? null,
           suitableFor: dto.suitableFor,
+          visualizerPattern: dto.visualizerPattern,
+          visualizerPatternCorner: dto.visualizerPatternCorner,
           roomTypes: dto.roomTypes,
           quantityOnHandSqm: initialAreaSqm,
           averageCostPrice,
@@ -380,6 +376,8 @@ export class ProductsService {
           where: { id },
           data: {
             ...rest,
+            image:
+              rest.image === undefined ? undefined : this.storage.productImageSource(rest.image),
             name: finalName,
             description: finalDescription,
             slug: finalName ? slugify(finalName) : undefined,
