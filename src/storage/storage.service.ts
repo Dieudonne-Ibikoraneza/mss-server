@@ -1,11 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { serviceUnavailable } from '@/common/errors/app-error';
+import { notFound, serviceUnavailable } from '@/common/errors/app-error';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { fetchPublicFile } from '@/common/utils/safe-url';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
+import { MinioStorage } from './minio-storage';
 
 export const PRODUCT_IMAGES_BUCKET = 'Products';
 export const COLLECTION_IMAGES_BUCKET = 'Collections';
+export const ROOM_THUMBNAILS_BUCKET = 'RoomThumbnails';
 /** AI-generated room visualizations — recommendation renders and chatbot
  * room/tile preview edits alike — a separate bucket from the catalog's own
  * product/collection photos since these are generated content, not managed
@@ -16,6 +20,14 @@ export const RECOMMENDATION_IMAGES_BUCKET = 'RecommendationVisuals';
  * `RECOMMENDATION_IMAGES_BUCKET` even though both feed the same feature. */
 export const ROOM_PHOTOS_BUCKET = 'RoomPhotos';
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
+const OBJECT_REFERENCE_PREFIX = 'mss-object:';
+const IMAGE_BUCKETS = new Set([
+  PRODUCT_IMAGES_BUCKET,
+  COLLECTION_IMAGES_BUCKET,
+  ROOM_THUMBNAILS_BUCKET,
+  RECOMMENDATION_IMAGES_BUCKET,
+  ROOM_PHOTOS_BUCKET,
+]);
 const SIGNED_URL_CACHE_SECONDS = 50 * 60;
 const MAX_CONCURRENT_SIGNED_URL_REQUESTS = 8;
 /**
@@ -34,6 +46,7 @@ const IMAGE_QUALITY = 82;
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
   private readonly supabase: SupabaseClient | null;
+  private readonly minio: MinioStorage | null;
   /** Buckets confirmed to exist this process — `ensureBucket` is otherwise a
    * network round trip on every single upload, for a check that basically
    * never needs redoing once it's passed. */
@@ -47,6 +60,7 @@ export class StorageService {
 
   constructor(private readonly config: ConfigService) {
     const driver = this.config.get<string>('storage.driver');
+    this.minio = driver === 'minio' ? new MinioStorage(this.config) : null;
     const url = this.config.get<string>('storage.supabase.url');
     const serviceRoleKey = this.config.get<string>('storage.supabase.serviceRoleKey');
 
@@ -59,13 +73,162 @@ export class StorageService {
   }
 
   async uploadProductImage(file: Express.Multer.File) {
-    return this.uploadImage(
+    const uploaded = await this.uploadImage(
       file.buffer,
       file.mimetype,
       PRODUCT_IMAGES_BUCKET,
       'products',
       'product',
     );
+    return {
+      path: uploaded.path,
+      url: uploaded.url,
+      contentType: uploaded.contentType,
+      size: uploaded.size,
+    };
+  }
+
+  private productImageKey(): Buffer {
+    const secret = this.config.get<string>('jwt.accessSecret');
+    if (!secret)
+      throw serviceUnavailable('storage.notConfigured', 'File storage is not configured.');
+    return createHash('sha256').update(`product-image:${secret}`).digest();
+  }
+
+  /** Opaque application URL: storage hosts and paths never reach the browser. */
+  private productImageUrl(source: string, bucket = PRODUCT_IMAGES_BUCKET): string {
+    const key = `product-proxy:${bucket}:${source}`;
+    const cached = this.signedUrlCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.url;
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.productImageKey(), iv);
+    // Keep existing catalog tokens compatible. Other private images get an
+    // expiring bucket/path reference, proxied by the same application endpoint.
+    const reference =
+      bucket === PRODUCT_IMAGES_BUCKET
+        ? source
+        : `${OBJECT_REFERENCE_PREFIX}${JSON.stringify({
+            bucket,
+            path: source,
+            expiresAt: Date.now() + SIGNED_URL_TTL_SECONDS * 1000,
+          })}`;
+    const encrypted = Buffer.concat([cipher.update(reference, 'utf8'), cipher.final()]);
+    const token = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
+    const origin = (this.config.get<string>('app.clientUrl') ?? 'http://localhost:3000').replace(
+      /\/+$/,
+      '',
+    );
+    const url = `${origin}/api/product-images/${token}`;
+    this.signedUrlCache.set(key, { url, expiresAt: Date.now() + SIGNED_URL_CACHE_SECONDS * 1000 });
+    return url;
+  }
+
+  private decodeProductImageToken(token: string): string {
+    try {
+      if (!/^[A-Za-z0-9_-]{39,4096}$/.test(token)) throw new Error('Invalid token');
+      const data = Buffer.from(token, 'base64url');
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        this.productImageKey(),
+        data.subarray(0, 12),
+      );
+      decipher.setAuthTag(data.subarray(12, 28));
+      return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
+    } catch {
+      throw notFound('storage.imageNotFound', 'Image not found.');
+    }
+  }
+
+  /** Recover the persisted reference when an editor sends back an application URL. */
+  productImageSource(image: string): string {
+    const proxy = /\/api\/product-images\/([A-Za-z0-9_-]+)(?:\?|$)/.exec(image);
+    if (proxy) return this.decodeProductImageToken(proxy[1]);
+    return this.extractOwnSignedPath(image) ?? image;
+  }
+
+  async getProductImageBlob(token: string): Promise<Blob> {
+    const source = this.decodeProductImageToken(token);
+    if (!source.startsWith(OBJECT_REFERENCE_PREFIX)) return this.downloadProductBlob(source);
+    const reference = this.decodeObjectReference(source);
+    return this.validateImageBlob(await this.downloadStoredBlob(reference.path, reference.bucket));
+  }
+
+  private decodeObjectReference(source: string): { bucket: string; path: string } {
+    try {
+      const reference = JSON.parse(source.slice(OBJECT_REFERENCE_PREFIX.length)) as {
+        bucket?: unknown;
+        path?: unknown;
+        expiresAt?: unknown;
+      };
+      if (
+        typeof reference.bucket !== 'string' ||
+        !IMAGE_BUCKETS.has(reference.bucket) ||
+        typeof reference.path !== 'string' ||
+        typeof reference.expiresAt !== 'number' ||
+        reference.expiresAt <= Date.now()
+      ) {
+        throw new Error('Invalid or expired image reference.');
+      }
+      return { bucket: reference.bucket, path: reference.path };
+    } catch {
+      throw notFound('storage.imageNotFound', 'Image not found.');
+    }
+  }
+
+  private async downloadStoredBlob(path: string, bucket: string): Promise<Blob> {
+    if (!this.supabase && !this.minio) {
+      throw serviceUnavailable('storage.notConfigured', 'File storage is not configured.');
+    }
+    try {
+      if (this.minio) return await this.minio.download(bucket, path);
+      const { data, error } = await this.supabase!.storage.from(bucket).download(path);
+      if (error || !data) throw error ?? new Error('Storage returned no file.');
+      return data;
+    } catch (error) {
+      this.logStorageFailure('Could not download storage image', error);
+      throw serviceUnavailable(
+        'storage.accessUrlFailed',
+        'Could not open this file right now. Please try again.',
+      );
+    }
+  }
+
+  private validateImageBlob(blob: Blob): Blob {
+    if (
+      !/^image\/(jpeg|png|webp|gif|avif)(?:;|$)/i.test(blob.type) ||
+      blob.size > 20 * 1024 * 1024
+    ) {
+      throw notFound('storage.imageNotFound', 'Image not found.');
+    }
+    return blob;
+  }
+
+  /** Internal image generation reads bytes directly, without visiting the frontend proxy. */
+  async downloadProductReference(
+    image: string,
+  ): Promise<{ data: string; mimeType: string } | null> {
+    try {
+      const blob = await this.downloadProductBlob(image);
+      return {
+        data: Buffer.from(await blob.arrayBuffer()).toString('base64'),
+        mimeType: blob.type,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async downloadProductBlob(image: string): Promise<Blob> {
+    const source = this.productImageSource(image);
+    let blob: Blob;
+    if (/^https?:\/\//i.test(source)) {
+      const file = await fetchPublicFile(source, { timeoutMs: 20_000, maxBytes: 20 * 1024 * 1024 });
+      if (!file) throw notFound('storage.imageNotFound', 'Image not found.');
+      blob = new Blob([new Uint8Array(file.buffer)], { type: file.contentType });
+    } else {
+      blob = await this.downloadStoredBlob(source, PRODUCT_IMAGES_BUCKET);
+    }
+    return this.validateImageBlob(blob);
   }
 
   async uploadCollectionImage(file: Express.Multer.File) {
@@ -75,6 +238,17 @@ export class StorageService {
       COLLECTION_IMAGES_BUCKET,
       'collections',
       'collection',
+    );
+  }
+
+  async uploadRoomThumbnail(file: Express.Multer.File) {
+    await this.ensureBucket(ROOM_THUMBNAILS_BUCKET);
+    return this.uploadImage(
+      file.buffer,
+      file.mimetype,
+      ROOM_THUMBNAILS_BUCKET,
+      'rooms',
+      'room thumbnail',
     );
   }
 
@@ -124,6 +298,47 @@ export class StorageService {
     );
   }
 
+  private describeError(error: unknown, depth = 0): unknown {
+    if (depth > 2) return '[cause depth limit]';
+    if (error instanceof Error) {
+      const details = error as NodeJS.ErrnoException;
+      return {
+        name: error.name,
+        message: error.message,
+        code: details.code,
+        syscall: details.syscall,
+        cause: error.cause === undefined ? undefined : this.describeError(error.cause, depth + 1),
+      };
+    }
+    if (typeof error === 'string' || typeof error === 'number') return error;
+    return undefined;
+  }
+
+  private logStorageFailure(action: string, error: unknown): void {
+    const details = error as {
+      message?: string;
+      name?: string;
+      status?: number;
+      statusCode?: string;
+      code?: string;
+      originalError?: unknown;
+      cause?: unknown;
+    } | null;
+    const original = details?.originalError ?? details?.cause;
+    const originalError = original instanceof Error ? original : undefined;
+    this.logger.error(
+      `${action}: ${JSON.stringify({
+        message: details?.message,
+        name: details?.name,
+        status: details?.status,
+        statusCode: details?.statusCode,
+        code: details?.code,
+        cause: this.describeError(original),
+      })}`,
+      originalError?.stack,
+    );
+  }
+
   /**
    * Downloads a stored image's raw bytes (base64-encoded) for handing to the
    * image model directly — used for the customer's own room photo, whose
@@ -135,15 +350,19 @@ export class StorageService {
     path: string,
     bucket: string,
   ): Promise<{ data: string; mimeType: string } | null> {
-    if (!this.supabase) return null;
-    const { data, error } = await this.supabase.storage.from(bucket).download(path);
-    if (error || !data) return null;
-    const buffer = Buffer.from(await data.arrayBuffer());
-    return { data: buffer.toString('base64'), mimeType: data.type || 'image/webp' };
+    try {
+      const data = await this.downloadStoredBlob(path, bucket);
+      const buffer = Buffer.from(await data.arrayBuffer());
+      return { data: buffer.toString('base64'), mimeType: data.type || 'image/webp' };
+    } catch {
+      return null;
+    }
   }
 
   /** Idempotent: creates the bucket if it doesn't exist yet, otherwise a no-op — safe to call before every upload. */
   private async ensureBucket(bucket: string): Promise<void> {
+    // MinIO ensures its single physical bucket inside upload(), where provider
+    // failures are caught and translated to the same upload error as Supabase.
     if (!this.supabase || this.confirmedBuckets.has(bucket)) return;
     const { error } = await this.supabase.storage.createBucket(bucket, { public: false });
     // Supabase has no "if not exists" flag — a 409 here just means another
@@ -162,7 +381,7 @@ export class StorageService {
     folder: string,
     resourceName: string,
   ) {
-    if (!this.supabase) {
+    if (!this.supabase && !this.minio) {
       throw serviceUnavailable(
         'storage.notConfigured',
         'File storage is not set up on this server. Please contact the administrator.',
@@ -176,17 +395,22 @@ export class StorageService {
 
     const extension = optimizedMimeType.split('/')[1] ?? 'png';
     const path = `${folder}/${crypto.randomUUID()}.${extension}`;
-    const { error: uploadError } = await this.supabase.storage
-      .from(bucket)
-      .upload(path, optimized, {
-        contentType: optimizedMimeType,
-        cacheControl: '3600',
-        upsert: false,
-      });
-
-    if (uploadError) {
-      // The provider's own wording is for the log, not for the person who clicked upload.
-      this.logger.error(`Unable to upload ${resourceName} image: ${uploadError.message}`);
+    try {
+      if (this.minio) {
+        await this.minio.upload(bucket, path, optimized, optimizedMimeType);
+      } else {
+        const { error } = await this.supabase!.storage.from(bucket).upload(path, optimized, {
+          contentType: optimizedMimeType,
+          cacheControl: '3600',
+          upsert: false,
+        });
+        if (error) throw error;
+      }
+    } catch (uploadError) {
+      // StorageUnknownError keeps the original fetch exception, including Node's
+      // nested system error (ECONNRESET, ETIMEDOUT, EAI_AGAIN, etc.). Logging
+      // only `message` collapses all of those into the unhelpful "fetch failed".
+      this.logStorageFailure(`Unable to upload ${resourceName} image`, uploadError);
       throw serviceUnavailable(
         'storage.uploadFailed',
         'Unable to upload the {{resource}} image. Please try again.',
@@ -253,6 +477,12 @@ export class StorageService {
    * the database would silently die the moment it expired.
    */
   async getSignedUrl(path: string, bucket = PRODUCT_IMAGES_BUCKET): Promise<string> {
+    if (bucket === PRODUCT_IMAGES_BUCKET)
+      return this.productImageUrl(this.productImageSource(path));
+    if (this.minio) {
+      if (!IMAGE_BUCKETS.has(bucket)) throw notFound('storage.imageNotFound', 'Image not found.');
+      return this.productImageUrl(path, bucket);
+    }
     if (!this.supabase) {
       throw serviceUnavailable(
         'storage.notConfigured',
@@ -281,8 +511,9 @@ export class StorageService {
       );
 
       if (error || !data?.signedUrl) {
-        this.logger.error(
-          `Could not create an access URL for "${path}": ${error?.message ?? 'unknown error'}`,
+        this.logStorageFailure(
+          `Could not create an access URL for "${path}"`,
+          error ?? new Error('Storage returned no signed URL.'),
         );
         throw serviceUnavailable(
           'storage.accessUrlFailed',
@@ -330,6 +561,8 @@ export class StorageService {
    * hand back a dead/unsigned path by omission.
    */
   async resolveImageUrl(image: string, bucket = PRODUCT_IMAGES_BUCKET): Promise<string> {
+    if (bucket === PRODUCT_IMAGES_BUCKET)
+      return this.productImageUrl(this.productImageSource(image));
     const selfSignedPath = this.extractOwnSignedPath(image);
     if (selfSignedPath) return this.getSignedUrl(selfSignedPath, bucket);
     if (/^https?:\/\//i.test(image)) return image;

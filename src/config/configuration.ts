@@ -110,6 +110,15 @@ export default () => ({
   storage: {
     driver: process.env.STORAGE_DRIVER ?? 'local',
     localPath: process.env.STORAGE_LOCAL_PATH ?? './uploads',
+    minio: {
+      endpoint: process.env.MINIO_ENDPOINT ?? 'magnificat-minio',
+      port: Number(process.env.MINIO_API_PORT ?? 9000),
+      useSSL: process.env.MINIO_USE_SSL === 'true',
+      accessKey: process.env.MINIO_ACCESS_KEY,
+      secretKey: process.env.MINIO_SECRET_KEY,
+      bucket: process.env.MINIO_BUCKET ?? 'magnificat-smart-space',
+      region: process.env.MINIO_REGION ?? 'us-east-1',
+    },
     supabase: {
       projectId: process.env.SUPABASE_PROJECT_ID ?? 'yinatdmepjyfvqjekbjp',
       url:

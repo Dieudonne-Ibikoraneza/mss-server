@@ -53,8 +53,27 @@ export const validationSchema = Joi.object({
   THROTTLE_TTL_MS: Joi.number().default(60000),
   THROTTLE_LIMIT: Joi.number().default(100),
 
-  STORAGE_DRIVER: Joi.string().valid('local', 'supabase').default('local'),
+  STORAGE_DRIVER: Joi.string().valid('local', 'supabase', 'minio').default('local'),
   STORAGE_LOCAL_PATH: Joi.string().default('./uploads'),
+  MINIO_ENDPOINT: Joi.string().hostname().default('magnificat-minio'),
+  MINIO_API_PORT: Joi.number().port().min(1).default(9000),
+  MINIO_USE_SSL: Joi.string().valid('true', 'false').default('false'),
+  MINIO_BUCKET: Joi.string()
+    .min(3)
+    .max(63)
+    .pattern(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/)
+    .default('magnificat-smart-space'),
+  MINIO_REGION: Joi.string().default('us-east-1'),
+  MINIO_ACCESS_KEY: Joi.when('STORAGE_DRIVER', {
+    is: 'minio',
+    then: Joi.string().min(3).required(),
+    otherwise: Joi.string().optional(),
+  }),
+  MINIO_SECRET_KEY: Joi.when('STORAGE_DRIVER', {
+    is: 'minio',
+    then: Joi.string().min(8).required(),
+    otherwise: Joi.string().optional(),
+  }),
   SUPABASE_PROJECT_ID: Joi.string().default('yinatdmepjyfvqjekbjp'),
   SUPABASE_URL: Joi.string().uri().optional(),
   SUPABASE_SERVICE_ROLE_KEY: Joi.when('STORAGE_DRIVER', {
