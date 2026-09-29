@@ -1,0 +1,1 @@
+ALTER TYPE "VisualizerTilePattern" ADD VALUE IF NOT EXISTS 'TWO_TURN';

@@ -45,6 +45,19 @@ enum SuitableFor {
   BOTH
 }
 
+enum VisualizerTilePattern {
+  STRAIGHT
+  TWO_TURN
+  QUARTER_TURN
+}
+
+enum VisualizerTileCorner {
+  TOP_RIGHT
+  BOTTOM_RIGHT
+  BOTTOM_LEFT
+  TOP_LEFT
+}
+
 /// Where a tile was actually placed in a saved room design — unlike
 /// `SuitableFor` (a product's own eligibility, which can be BOTH), a single
 /// placement is always one physical surface.
@@ -279,6 +292,11 @@ model Product {
   nameRw         String?
   descriptionRw  String?
   suitableFor    SuitableFor @default(BOTH)
+  /// How this tile should repeat in the 3D visualizer. Decorative tiles such
+  /// as Damask need the installer-style four-tile rotation; plain tiles stay straight.
+  visualizerPattern VisualizerTilePattern?
+  /// Source image corner that meets at the center of a four-tile group.
+  visualizerPatternCorner VisualizerTileCorner @default(TOP_RIGHT)
   roomTypes      RoomType[]
   isActive       Boolean     @default(true)
   createdAt      DateTime    @default(now())
