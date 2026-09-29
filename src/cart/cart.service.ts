@@ -18,30 +18,9 @@ export class CartService {
     private readonly storage: StorageService,
   ) {}
 
-  /**
-   * A cart line nests the full product row (name/image/price) for the page,
-   * but that row's `image` is the raw DB value — a bare private-blob path
-   * like "products/<uuid>.webp" a browser can't load. `ProductsService`
-   * re-signs it on every `/products` read; `cart/view` skipped that step, so
-   * the thumbnail was broken for every product whose image is an upload
-   * rather than an absolute seeded URL. Mirrors `ProductsService.resolveImageUrl`
-   * (a separate copy, same as the orders/collections/chatbot copies).
-   */
-  private async resolveImageUrl(image: string): Promise<string> {
-    const selfSignedPath = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(image);
-    if (selfSignedPath) {
-      try {
-        return await this.storage.getSignedUrl(decodeURIComponent(selfSignedPath[1]));
-      } catch {
-        return image;
-      }
-    }
-    if (/^https?:\/\//i.test(image)) return image;
-    try {
-      return await this.storage.getSignedUrl(image);
-    } catch {
-      return image;
-    }
+  /** Share the product image proxy across catalog, cart and order responses. */
+  private resolveImageUrl(image: string): Promise<string> {
+    return this.storage.resolveImageUrl(image);
   }
 
   /**

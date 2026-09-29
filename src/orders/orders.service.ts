@@ -200,30 +200,9 @@ export class OrdersService {
     private readonly storage: StorageService,
   ) {}
 
-  /**
-   * An order item nests its full product row for the UI (name/image/price),
-   * but that row's `image` is the raw value from the DB — a bare private-blob
-   * path like "products/<uuid>.webp" that a browser can't load on its own.
-   * `ProductsService` re-signs it on every `/products` read; order responses
-   * skipped that step, so the product thumbnail on an order was always
-   * broken. Mirrors `ProductsService.resolveImageUrl` (kept a separate copy
-   * for the same reason the collections/chatbot copies are).
-   */
-  private async resolveImageUrl(image: string): Promise<string> {
-    const selfSignedPath = /\/storage\/v1\/object\/sign\/[^/]+\/(.+?)(?:\?|$)/.exec(image);
-    if (selfSignedPath) {
-      try {
-        return await this.storage.getSignedUrl(decodeURIComponent(selfSignedPath[1]));
-      } catch {
-        return image;
-      }
-    }
-    if (/^https?:\/\//i.test(image)) return image;
-    try {
-      return await this.storage.getSignedUrl(image);
-    } catch {
-      return image;
-    }
+  /** Share the product image proxy across catalog, cart and order responses. */
+  private resolveImageUrl(image: string): Promise<string> {
+    return this.storage.resolveImageUrl(image);
   }
 
   /** `sanitizeOrder` (staff-field stripping) plus a fresh signed URL for each item's product image. */
