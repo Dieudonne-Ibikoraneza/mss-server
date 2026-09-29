@@ -187,6 +187,7 @@ export class AnalyticsService {
   /** The KPI strip the overview screen leads with. */
   async overview(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
+    const inRange = { gte: resolved.from, lt: resolved.to };
 
     const [
       earnedOrders,
@@ -201,7 +202,7 @@ export class AnalyticsService {
       funnel,
     ] = await Promise.all([
       this.prisma.order.findMany({
-        where: EARNED_WHERE,
+        where: { ...EARNED_WHERE, paymentVerifiedAt: inRange },
         select: {
           subtotal: true,
           transportFee: true,
@@ -209,7 +210,7 @@ export class AnalyticsService {
           createdByType: true,
         },
       }),
-      this.prisma.order.count(),
+      this.prisma.order.count({ where: { createdAt: inRange } }),
       // Placed but not yet paid: waiting on the customer.
       this.prisma.order.count({
         where: {
@@ -238,6 +239,7 @@ export class AnalyticsService {
         having: { customerId: { _count: { gt: 1 } } },
       }),
       this.prisma.recommendation.findMany({
+        where: { createdAt: inRange },
         select: { decision: true, purchased: true, matchScore: true },
       }),
       this.prisma.product.findMany({
@@ -245,7 +247,7 @@ export class AnalyticsService {
         select: { quantityOnHandSqm: true, averageCostPrice: true },
       }),
       getLowStockThreshold(this.prisma),
-      this.conversionFunnel(),
+      this.conversionFunnel(resolved),
     ]);
 
     const totalSales = earnedOrders.reduce((sum, order) => sum + orderSubtotal(order), 0);
@@ -297,6 +299,7 @@ export class AnalyticsService {
   /** Customer Analytics domain: totals, acquisition channels, project types, new-vs-repeat trend. */
   async customers(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
+    const inRange = { gte: resolved.from, lt: resolved.to };
 
     const [clients, byHeardAboutUs, repeatCustomers, projectTypes, allOrders] = await Promise.all([
       this.prisma.user.findMany({
@@ -305,16 +308,16 @@ export class AnalyticsService {
       }),
       this.prisma.user.groupBy({
         by: ['heardAboutUs'],
-        where: { role: 'CLIENT' },
+        where: { role: 'CLIENT', createdAt: inRange },
         _count: { _all: true },
       }),
       this.prisma.order.groupBy({
         by: ['customerId'],
-        where: { status: { not: OrderStatus.CANCELLED } },
+        where: EARNED_WHERE,
         _count: { _all: true },
         having: { customerId: { _count: { gt: 1 } } },
       }),
-      this.projectTypeDistribution(),
+      this.projectTypeDistribution(resolved),
       // Every order ever (not just this period) — a customer's *first* order
       // can predate the window, so "was this their first?" needs the full
       // history, even though only orders inside the window get bucketed below.
@@ -393,11 +396,26 @@ export class AnalyticsService {
    * revenue are split evenly across its room types — that way the slices add up
    * to the totals instead of double counting.
    */
-  private async projectTypeDistribution() {
+  private async projectTypeDistribution(resolved: ResolvedPeriod) {
+    const inRange = { gte: resolved.from, lt: resolved.to };
     const items = await this.prisma.orderItem.findMany({
+      where: {
+        order: {
+          status: { not: OrderStatus.CANCELLED },
+          OR: [{ createdAt: inRange }, { ...EARNED_WHERE, paymentVerifiedAt: inRange }],
+        },
+      },
       include: {
         product: { select: { roomTypes: true } },
-        order: { select: { customerId: true, total: true, status: true, quotationStatus: true } },
+        order: {
+          select: {
+            customerId: true,
+            createdAt: true,
+            paymentVerifiedAt: true,
+            status: true,
+            quotationStatus: true,
+          },
+        },
       },
     });
 
@@ -410,9 +428,12 @@ export class AnalyticsService {
       const share = Number(item.totalPrice) / roomTypes.length;
 
       for (const roomType of roomTypes) {
-        if (!customers.has(roomType)) customers.set(roomType, new Set());
-        customers.get(roomType)!.add(item.order.customerId);
-        if (isEarned(item.order)) {
+        if (item.order.createdAt >= resolved.from && item.order.createdAt < resolved.to) {
+          if (!customers.has(roomType)) customers.set(roomType, new Set());
+          customers.get(roomType)!.add(item.order.customerId);
+        }
+        const paidAt = item.order.paymentVerifiedAt;
+        if (isEarned(item.order) && paidAt && paidAt >= resolved.from && paidAt < resolved.to) {
           revenue.set(roomType, (revenue.get(roomType) ?? 0) + share);
         }
       }
@@ -646,11 +667,18 @@ export class AnalyticsService {
    * "gaining" sessions an earlier one doesn't have), which counting exact
    * per-stage events could, and did.
    */
-  async conversionFunnel() {
+  async conversionFunnel(resolved?: ResolvedPeriod) {
     const events = await this.prisma.customerJourneyEvent.findMany({
+      ...(resolved ? { where: { createdAt: { gte: resolved.from, lt: resolved.to } } } : {}),
       select: { sessionId: true, userId: true, stage: true },
     });
 
+    return this.funnelFromEvents(events);
+  }
+
+  private funnelFromEvents(
+    events: { sessionId: string; userId: string | null; stage: JourneyStage }[],
+  ) {
     const identify = journeyIdentity(events);
     const furthestIndexByPerson = new Map<string, number>();
     for (const event of events) {
@@ -676,13 +704,11 @@ export class AnalyticsService {
   async journeyAnalytics(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
 
-    const [funnel, events] = await Promise.all([
-      this.conversionFunnel(),
-      this.prisma.customerJourneyEvent.findMany({
-        where: { createdAt: { gte: resolved.from, lt: resolved.to } },
-        select: { createdAt: true, sessionId: true, userId: true, stage: true },
-      }),
-    ]);
+    const events = await this.prisma.customerJourneyEvent.findMany({
+      where: { createdAt: { gte: resolved.from, lt: resolved.to } },
+      select: { createdAt: true, sessionId: true, userId: true, stage: true },
+    });
+    const funnel = this.funnelFromEvents(events);
 
     const entry = funnel[0]?.customers ?? 0;
     const stages = funnel.map((row, index) => {
@@ -1223,8 +1249,9 @@ export class AnalyticsService {
    */
   async sales(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
     const resolved = resolvePeriod(period);
-    const spanMs = resolved.to.getTime() - resolved.from.getTime();
-    const previousFrom = new Date(resolved.from.getTime() - spanMs);
+    // Resolve the preceding calendar window, rather than subtracting this
+    // year's millisecond span (which shifts the boundary across leap years).
+    const previousFrom = resolvePeriod(period, new Date(resolved.from.getTime() - 1)).from;
     const inRange = { gte: resolved.from, lt: resolved.to };
 
     const [
