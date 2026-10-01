@@ -1,10 +1,22 @@
-import { IsEnum, IsOptional } from 'class-validator';
+import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { QueryAnalyticsTableDto } from './query-analytics.dto';
 import { AnalyticsPeriod } from '@/common/utils/analytics-period';
 
 export enum TileAnalyticsSort {
+  VIEWED_ASC = 'viewed_asc',
+  VIEWED_DESC = 'viewed_desc',
   APPLIED_ASC = 'applied_asc',
   APPLIED_DESC = 'applied_desc',
+  RECOMMENDED_ASC = 'recommended_asc',
+  RECOMMENDED_DESC = 'recommended_desc',
+  SAVED_ASC = 'saved_asc',
+  SAVED_DESC = 'saved_desc',
+  PURCHASED_ASC = 'purchased_asc',
+  PURCHASED_DESC = 'purchased_desc',
+  SELECTION_RATE_ASC = 'selectionRate_asc',
+  SELECTION_RATE_DESC = 'selectionRate_desc',
+  NAME_ASC = 'name_asc',
+  NAME_DESC = 'name_desc',
 }
 
 /**
@@ -20,4 +32,20 @@ export class QueryTilesDto extends QueryAnalyticsTableDto {
   @IsOptional()
   @IsEnum(TileAnalyticsSort)
   sort?: TileAnalyticsSort;
+
+  @IsOptional()
+  @IsString()
+  roomTypes?: string;
+
+  @IsOptional()
+  @IsString()
+  suitableFor?: string;
+
+  @IsOptional()
+  @IsString()
+  sizes?: string;
+
+  @IsOptional()
+  @IsString()
+  stockStatuses?: string;
 }

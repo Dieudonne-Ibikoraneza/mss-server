@@ -458,22 +458,16 @@ export class AnalyticsService {
   async tiles(query: QueryTilesDto) {
     const resolved = resolvePeriod(query.period);
     const inRange = { gte: resolved.from, lt: resolved.to };
-    const where: Prisma.ProductWhereInput = {
-      isActive: true,
-      ...(query.search
-        ? {
-            OR: [
-              { name: { contains: query.search, mode: 'insensitive' as const } },
-              { sku: { contains: query.search, mode: 'insensitive' as const } },
-            ],
-          }
-        : {}),
-    };
+    const search = query.search?.trim().toLowerCase();
+    const roomTypes = query.roomTypes?.split(',').filter(Boolean) ?? [];
+    const suitableFor = query.suitableFor?.split(',').filter(Boolean) ?? [];
+    const sizes = query.sizes?.split(',').filter(Boolean) ?? [];
+    const stockStatuses = query.stockStatuses?.split(',').filter(Boolean) ?? [];
 
     const leaderboardByType = async (type: TileEventType, limit = 10) =>
       this.prisma.tileEvent.groupBy({
         by: ['productId'],
-        where: { type, createdAt: inRange },
+        where: { type, createdAt: inRange, product: { isActive: true } },
         _count: { _all: true },
         orderBy: { _count: { productId: 'desc' } },
         take: limit,
@@ -486,10 +480,10 @@ export class AnalyticsService {
       saved,
       purchased,
       products,
-      total,
       events,
       soldAreaByProduct,
       lowStockThreshold,
+      recommendations,
     ] = await Promise.all([
       leaderboardByType(TileEventType.VIEWED),
       leaderboardByType(TileEventType.APPLIED),
@@ -497,15 +491,12 @@ export class AnalyticsService {
       leaderboardByType(TileEventType.SAVED),
       leaderboardByType(TileEventType.PURCHASED),
       this.prisma.product.findMany({
-        where,
+        where: { isActive: true },
         include: { collection: { select: { title: true, size: true } } },
-        // Application sorting needs the complete matching set before the
-        // server slices the requested page. The response is still paginated;
-        // this avoids sending the whole catalogue to the browser.
-        ...(query.sort ? {} : { skip: query.skip, take: query.limit }),
+        // Global previews and metric rankings use all active products;
+        // catalogue filters and pagination are applied after aggregation.
         orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.product.count({ where }),
       this.prisma.tileEvent.groupBy({
         by: ['productId', 'type'],
         where: { createdAt: inRange },
@@ -521,7 +512,15 @@ export class AnalyticsService {
         _sum: { requiredAreaSqm: true },
       }),
       getLowStockThreshold(this.prisma),
+      this.prisma.recommendation.groupBy({
+        by: ['productId'],
+        where: { createdAt: inRange },
+        _count: { _all: true },
+      }),
     ]);
+    const recommendedByProduct = new Map(
+      recommendations.map((row) => [row.productId, row._count._all]),
+    );
     const soldAreaSqmOf = (productId: string) =>
       Number(
         soldAreaByProduct.find((row) => row.productId === productId)?._sum.requiredAreaSqm ?? 0,
@@ -568,6 +567,7 @@ export class AnalyticsService {
         stockStatus: stockStatusOf(Number(product.quantityOnHandSqm), lowStockThreshold),
         viewed: productViewed,
         applied: productApplied,
+        recommended: recommendedByProduct.get(product.id) ?? 0,
         compared: countOf(product.id, TileEventType.COMPARED),
         saved: countOf(product.id, TileEventType.SAVED),
         purchased: productPurchased,
@@ -587,22 +587,86 @@ export class AnalyticsService {
       { viewed: 0, applied: 0, purchased: 0 },
     );
 
-    const sortedRows =
-      query.sort === TileAnalyticsSort.APPLIED_ASC
-        ? [...rows].sort((a, b) => a.applied - b.applied || a.name.localeCompare(b.name))
-        : query.sort === TileAnalyticsSort.APPLIED_DESC
-          ? [...rows].sort((a, b) => b.applied - a.applied || a.name.localeCompare(b.name))
-          : rows;
-    const pageRows = query.sort
-      ? sortedRows.slice(query.skip, query.skip + query.limit)
-      : sortedRows;
-    const pageImageById = await this.resolveImageUrls(
-      products.filter((product) => pageRows.some((row) => row.productId === product.id)),
+    const sortedRows = rows.filter(
+      (row) =>
+        (!search ||
+          row.name.toLowerCase().includes(search) ||
+          row.sku.toLowerCase().includes(search)) &&
+        (!roomTypes.length || row.roomTypes.some((room) => roomTypes.includes(room))) &&
+        (!suitableFor.length || suitableFor.includes(row.suitableFor)) &&
+        (!sizes.length || sizes.includes(row.size)) &&
+        (!stockStatuses.length || stockStatuses.includes(row.stockStatus)),
     );
-    const serializedPageRows = pageRows.map((row) => ({
+    if (query.sort) {
+      const sort = query.sort;
+      sortedRows.sort((a, b) => {
+        let difference: number;
+        switch (sort) {
+          case TileAnalyticsSort.NAME_ASC:
+          case TileAnalyticsSort.NAME_DESC:
+            difference = a.name.localeCompare(b.name);
+            break;
+          case TileAnalyticsSort.VIEWED_ASC:
+          case TileAnalyticsSort.VIEWED_DESC:
+            difference = a.viewed - b.viewed;
+            break;
+          case TileAnalyticsSort.APPLIED_ASC:
+          case TileAnalyticsSort.APPLIED_DESC:
+            difference = a.applied - b.applied;
+            break;
+          case TileAnalyticsSort.SAVED_ASC:
+          case TileAnalyticsSort.SAVED_DESC:
+            difference = a.saved - b.saved;
+            break;
+          case TileAnalyticsSort.RECOMMENDED_ASC:
+          case TileAnalyticsSort.RECOMMENDED_DESC:
+            difference = a.recommended - b.recommended;
+            break;
+          case TileAnalyticsSort.PURCHASED_ASC:
+          case TileAnalyticsSort.PURCHASED_DESC:
+            difference = a.purchased - b.purchased;
+            break;
+          case TileAnalyticsSort.SELECTION_RATE_ASC:
+          case TileAnalyticsSort.SELECTION_RATE_DESC:
+            difference = a.selectionRate - b.selectionRate;
+            break;
+        }
+        return (
+          (sort.endsWith('_desc') ? -difference : difference) ||
+          a.name.localeCompare(b.name) ||
+          a.productId.localeCompare(b.productId)
+        );
+      });
+    }
+    const pageRows = sortedRows.slice(query.skip, query.skip + query.limit);
+    const mostViewedRows = rows
+      .filter((row) => row.viewed > 0)
+      .sort(
+        (a, b) =>
+          b.viewed - a.viewed ||
+          a.name.localeCompare(b.name) ||
+          a.productId.localeCompare(b.productId),
+      )
+      .slice(0, 5);
+    const mostLikedRows = rows
+      .filter((row) => row.saved > 0)
+      .sort(
+        (a, b) =>
+          b.saved - a.saved ||
+          a.name.localeCompare(b.name) ||
+          a.productId.localeCompare(b.productId),
+      )
+      .slice(0, 5);
+    const visibleIds = new Set(
+      [...pageRows, ...mostViewedRows, ...mostLikedRows].map((row) => row.productId),
+    );
+    const pageImageById = await this.resolveImageUrls(
+      products.filter((product) => visibleIds.has(product.id)),
+    );
+    const serializeRow = (row: (typeof rows)[number]) => ({
       ...row,
       image: pageImageById.get(row.productId) ?? row.image,
-    }));
+    });
 
     return {
       period: resolved.period,
@@ -619,7 +683,11 @@ export class AnalyticsService {
         totalViews: totals.viewed,
       },
       filters: { sizes: [...new Set(products.map((product) => product.collection.size))].sort() },
-      table: paginate(serializedPageRows, total, query.page, query.limit),
+      previews: {
+        mostViewed: mostViewedRows.map(serializeRow),
+        mostLiked: mostLikedRows.map(serializeRow),
+      },
+      table: paginate(pageRows.map(serializeRow), sortedRows.length, query.page, query.limit),
     };
   }
 
