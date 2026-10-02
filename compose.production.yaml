@@ -1,0 +1,69 @@
+name: magnificat-api
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-magnificat-backend:local}
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      API_PREFIX: api
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    ports:
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-4000}:4000"
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/v1/health', {signal: AbortSignal.timeout(6000)}).then(r => {if (!r.ok) process.exit(1)}).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 8s
+      start_period: 40s
+      retries: 3
+    stop_grace_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  migrations:
+    image: ${MIGRATIONS_IMAGE:-magnificat-migrations:local}
+    build:
+      context: .
+      target: migrations
+    profiles: [tools]
+    init: true
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env.docker}
+    networks:
+      - backend
+
+networks:
+  backend:
+    name: ${BACKEND_NETWORK:-magnificat-backend}
+    external: true
+
+volumes:
+  redis_data:
