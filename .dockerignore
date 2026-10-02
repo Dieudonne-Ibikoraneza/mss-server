@@ -1,5 +1,15 @@
 node_modules
 dist
 coverage
-.env
+.env*
 .git
+*.log
+*.tsbuildinfo
+uploads
+test
+README.md
+docker-compose.yml
+compose*.yaml
+Dockerfile
+.dockerignore
+docker.sh
