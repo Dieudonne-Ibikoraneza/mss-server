@@ -23,6 +23,42 @@ rate limiting, OTP codes, and session/refresh-token bookkeeping.
 
 ## Getting started
 
+### Production Docker
+
+Use `./docker.sh --help` for the deployment wrapper. Start with
+`./docker.sh --init-env`, fill `.env.docker`, then run `./docker.sh --up --migrate`.
+The wrapper builds images, creates the backend network, explicitly applies
+migrations with `--migrate`, and waits for healthy API/Redis containers. Omit
+`--migrate` when the database is current. Use `--logs --follow`, `--status`,
+`--stop`, or `--down` to manage the stack; `--env-file PATH` selects a custom
+environment file. Container startup uses `docker-entrypoint.sh` and forwards
+shutdown signals directly to Node.
+
+`compose.production.yaml` runs the API and Redis on the shared
+`magnificat-backend` network. Deploy PostgreSQL and private MinIO separately
+from the workspace's `database/` and `storage/` folders first; their Docker
+wrappers create the same network. Match those projects' credentials in
+`.env.docker` (`DATABASE_URL`/`DIRECT_URL`, `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`).
+The `minio` storage driver uses private objects and application image URLs;
+existing Supabase deployments can continue using the `supabase` driver.
+
+```sh
+cp .env.docker.example .env.docker
+# Fill database URLs, JWT secrets, frontend origin, and storage credentials.
+sh scripts/create-docker-network.sh magnificat-backend
+docker compose --env-file .env.docker -f compose.production.yaml build
+docker compose --env-file .env.docker -f compose.production.yaml --profile tools run --build --rm migrations
+docker compose --env-file .env.docker -f compose.production.yaml up -d
+```
+
+Migrations are explicit; API startup never resets or seeds the database.
+The runtime image includes the generated Prisma client and production
+dependencies. The `migrations` build target supplies the Prisma CLI separately.
+See [the workspace Docker guide](../DOCKER.md) for the full stack and connecting
+your external services.
+
+### Local development
+
 1. **Install dependencies**
 
    ```bash
