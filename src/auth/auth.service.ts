@@ -96,14 +96,14 @@ export class AuthService {
       return this.genericOtpResponse();
     }
 
-    return this.otp.send(dto.email, 'email', 'login', user.language);
+    return this.otp.send(dto.email, 'email', 'login', dto.language ?? user.language);
   }
 
   /** Resends whichever code is currently pending: a registration code, or a login code. */
   async resendOtp(dto: RequestOtpDto) {
     const pending = await this.redis.get<PendingRegistration>(this.pendingKey(dto.email));
     if (pending) {
-      return this.otp.send(dto.email, 'email', 'register', pending.language);
+      return this.otp.send(dto.email, 'email', 'register', dto.language ?? pending.language);
     }
 
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
@@ -118,7 +118,7 @@ export class AuthService {
       return this.genericOtpResponse();
     }
 
-    return this.otp.send(dto.email, 'email', 'login', user.language);
+    return this.otp.send(dto.email, 'email', 'login', dto.language ?? user.language);
   }
 
   /** Verifies the OTP and either completes a pending registration or logs an existing user in. */

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- `expect.any(...)` matchers are typed `any` */
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { UserStatus } from '@prisma/client';
+import { Language, UserStatus } from '@prisma/client';
 import { AuthService } from './auth.service';
 
 describe('AuthService — account status enforcement', () => {
@@ -89,6 +89,15 @@ describe('AuthService — account status enforcement', () => {
   });
 
   describe('login', () => {
+    it('sends the OTP in the requested language when it differs from the account preference', async () => {
+      prisma.user.findUnique.mockResolvedValue(baseUser);
+
+      await service.login({ email: baseUser.email, language: Language.RW });
+
+      expect(otp.send).toHaveBeenCalledWith(baseUser.email, 'email', 'login', Language.RW);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
     it('sends an OTP for an active user', async () => {
       prisma.user.findUnique.mockResolvedValue(baseUser);
 
@@ -124,6 +133,31 @@ describe('AuthService — account status enforcement', () => {
   });
 
   describe('resendOtp', () => {
+    it('resends the login OTP in the requested language', async () => {
+      prisma.user.findUnique.mockResolvedValue(baseUser);
+
+      await service.resendOtp({ email: baseUser.email, language: Language.RW });
+
+      expect(otp.send).toHaveBeenCalledWith(baseUser.email, 'email', 'login', Language.RW);
+    });
+
+    it.each([undefined, Language.RW])(
+      'resends a pending registration OTP with requested language %s or its saved preference',
+      async (language) => {
+        redis.get.mockResolvedValue({ email: baseUser.email, language: Language.EN });
+
+        await service.resendOtp({ email: baseUser.email, language });
+
+        expect(otp.send).toHaveBeenCalledWith(
+          baseUser.email,
+          'email',
+          'register',
+          language ?? Language.EN,
+        );
+        expect(redis.set).not.toHaveBeenCalled();
+      },
+    );
+
     it('sends an OTP for an active user with no pending registration', async () => {
       prisma.user.findUnique.mockResolvedValue(baseUser);
 
