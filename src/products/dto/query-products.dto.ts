@@ -16,7 +16,18 @@ export enum ProductStockStatus {
   OUT_OF_STOCK = 'out_of_stock',
 }
 
+export enum ProductCatalogStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+  ALL = 'all',
+}
+
 export class QueryProductsDto extends PaginationDto {
+  /** Inactive catalog entries are visible only to admins and stock managers. */
+  @IsOptional()
+  @IsEnum(ProductCatalogStatus)
+  catalogStatus?: ProductCatalogStatus = ProductCatalogStatus.ACTIVE;
+
   @IsOptional()
   @IsUUID()
   collectionId?: string;

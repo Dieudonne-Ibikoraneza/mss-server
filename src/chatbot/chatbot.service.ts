@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { forbidden, notFound } from '@/common/errors/app-error';
+import { badRequest, forbidden, notFound } from '@/common/errors/app-error';
 import {
   ChatRole,
   Language,
@@ -37,6 +37,11 @@ import { ImagePreviewDto } from './dto/media-preview.dto';
 import { UpdateKnowledgeBaseEntryDto, UpsertKnowledgeBaseEntryDto } from './dto/knowledge-base.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
+import { paginate } from '@/common/dto/pagination.dto';
+import {
+  ListRecommendationTilesDto,
+  RecommendationEligibility,
+} from './dto/recommendation-exclusion.dto';
 import {
   StorageService,
   RECOMMENDATION_IMAGES_BUCKET,
@@ -174,7 +179,7 @@ export class ChatbotService {
         take: 10,
       }),
       this.prisma.product.findMany({
-        where: { isActive: true },
+        where: { isActive: true, recommendationExcluded: false },
         include: { collection: true },
         orderBy: { createdAt: 'desc' },
         take: MAX_CANDIDATE_PRODUCTS,
@@ -279,7 +284,20 @@ export class ChatbotService {
   ) {
     if (picks.length === 0) return [];
 
-    const byId = new Map(candidateProducts.map((p) => [p.id, p]));
+    // An admin may have excluded a tile while the AI was responding. Recheck
+    // eligibility for both surfaces before generating images or saving picks.
+    const eligibleProducts = await this.prisma.product.findMany({
+      where: {
+        id: { in: candidateProducts.map((product) => product.id) },
+        isActive: true,
+        recommendationExcluded: false,
+      },
+      select: { id: true },
+    });
+    const eligibleIds = new Set(eligibleProducts.map((product) => product.id));
+    const byId = new Map(
+      candidateProducts.filter((product) => eligibleIds.has(product.id)).map((p) => [p.id, p]),
+    );
     type CandidateProduct = (typeof candidateProducts)[number];
     const resolved = picks
       .map((pick, index) => {
@@ -324,6 +342,10 @@ export class ChatbotService {
             description: product.description,
             collection: product.collection.title,
             size: product.collection.size,
+            tileAreaSqm: Number(product.collection.tileAreaSqm),
+            suitableFor: product.suitableFor,
+            visualizerPattern: product.visualizerPattern,
+            visualizerPatternCorner: product.visualizerPatternCorner,
             imageUrl: floorImageUrls[index],
           },
           ...(wallProduct && wallImageUrls[index]
@@ -333,6 +355,10 @@ export class ChatbotService {
                   description: wallProduct.description,
                   collection: wallProduct.collection.title,
                   size: wallProduct.collection.size,
+                  tileAreaSqm: Number(wallProduct.collection.tileAreaSqm),
+                  suitableFor: wallProduct.suitableFor,
+                  visualizerPattern: wallProduct.visualizerPattern,
+                  visualizerPatternCorner: wallProduct.visualizerPatternCorner,
                   imageUrl: wallImageUrls[index],
                 },
               }
@@ -803,6 +829,10 @@ export class ChatbotService {
               collection: product.collection.title,
               size: product.collection.size,
               description: product.description,
+              tileAreaSqm: Number(product.collection.tileAreaSqm),
+              suitableFor: product.suitableFor,
+              visualizerPattern: product.visualizerPattern,
+              visualizerPatternCorner: product.visualizerPatternCorner,
             },
           })
         : null;
@@ -913,6 +943,67 @@ export class ChatbotService {
 
   listKnowledgeBaseForAdmin() {
     return this.prisma.knowledgeBaseEntry.findMany({ orderBy: { updatedAt: 'desc' } });
+  }
+
+  async listRecommendationTiles(dto: ListRecommendationTilesDto) {
+    const search = dto.search?.trim();
+    const where: Prisma.ProductWhereInput = {
+      ...(dto.eligibility === RecommendationEligibility.ALL
+        ? {}
+        : { recommendationExcluded: dto.eligibility === RecommendationEligibility.EXCLUDED }),
+      ...(dto.eligibility === RecommendationEligibility.ELIGIBLE ? { isActive: true } : {}),
+      ...(search
+        ? {
+            OR: ['name', 'nameRw', 'sku'].map((field) => ({
+              [field]: { contains: search, mode: 'insensitive' },
+            })),
+          }
+        : {}),
+    };
+    const [tiles, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          nameRw: true,
+          sku: true,
+          image: true,
+          isActive: true,
+          recommendationExcluded: true,
+          collection: { select: { title: true, titleRw: true, size: true } },
+        },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        skip: dto.skip,
+        take: dto.limit,
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+    const items = await Promise.all(
+      tiles.map(async (tile) => ({
+        ...tile,
+        image: await this.resolveProductImage(tile.image),
+      })),
+    );
+    return paginate(items, total, dto.page, dto.limit);
+  }
+
+  async updateRecommendationExclusion(id: string, recommendationExcluded: boolean) {
+    const product = await this.prisma.product.findUnique({ where: { id }, select: { id: true } });
+    if (!product) throw notFound('catalog.productNotFound', 'Product not found.');
+    // Check catalog activity in the write itself: a restore must not undo an
+    // automatic exclusion if another request deactivated the tile meanwhile.
+    const updated = await this.prisma.product.updateMany({
+      where: { id, ...(!recommendationExcluded ? { isActive: true } : {}) },
+      data: { recommendationExcluded },
+    });
+    if (updated.count === 0) {
+      throw badRequest(
+        'chatbot.inactiveTileCannotBeAllowed',
+        'Reactivate this tile in the catalog before allowing recommendations.',
+      );
+    }
+    return { id, recommendationExcluded };
   }
 
   /**

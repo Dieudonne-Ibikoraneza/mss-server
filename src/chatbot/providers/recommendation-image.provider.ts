@@ -1,3 +1,5 @@
+import type { TileRenderingSpec } from './tile-rendering-prompt';
+
 export const RECOMMENDATION_IMAGE_PROVIDER = Symbol('RECOMMENDATION_IMAGE_PROVIDER');
 
 export interface RecommendationImageInput {
@@ -6,21 +8,15 @@ export interface RecommendationImageInput {
   /** Explicit room context so paired kitchen tiles are not rendered as bathrooms. */
   roomType?: 'BATHROOM' | 'KITCHEN';
   /** The floor tile (or the sole tile, outside a bathroom combo). */
-  product: {
-    name: string;
-    description: string | null;
+  product: TileRenderingSpec & {
     collection: string;
-    size: string;
     imageUrl: string;
   };
   /** Present only for a floor+wall combo — a second, different tile
    * to render installed on the lower portion of the wall alongside `product`
    * on the floor, in the same scene. */
-  wallProduct?: {
-    name: string;
-    description: string | null;
+  wallProduct?: TileRenderingSpec & {
     collection: string;
-    size: string;
     imageUrl: string;
   };
 }

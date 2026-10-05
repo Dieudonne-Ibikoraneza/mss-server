@@ -141,6 +141,17 @@ export class ProductsController {
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
   @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Reactivate a catalog product, retaining its recommendation exclusion (admin/stock manager)',
+  })
+  @Patch(':id/reactivate')
+  reactivate(@Param('id') id: string) {
+    return this.productsService.reactivate(id);
+  }
+
+  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Adjust stock/inventory for a product (admin/stock manager)' })
   @Patch(':id/stock')
   adjustStock(

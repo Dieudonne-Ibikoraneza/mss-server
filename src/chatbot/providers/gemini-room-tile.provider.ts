@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import type { GeneratedImage } from './recommendation-image.provider';
 import type { RoomTileEditInput, RoomTileEditProvider } from './room-tile-provider.interface';
 import { callGeminiImageModel } from './gemini-image-client';
+import { tileInstallationInstructions, TILE_PATTERN_CHECK } from './tile-rendering-prompt';
+import { createTileRepeatReference, repeatReferenceInstructions } from './tile-repeat-reference';
 
 const MAX_DESCRIPTION_CHARS = 500;
 
@@ -34,13 +36,20 @@ export class GeminiRoomTileProvider implements RoomTileEditProvider {
     const description = input.product.description
       ? ` — ${input.product.description.slice(0, MAX_DESCRIPTION_CHARS)}`
       : '';
+    const repeatReference = await createTileRepeatReference(input.tileImage, input.product);
 
     return callGeminiImageModel(this.logger, this.apiKey, this.model, [
       {
-        text: `Edit the FIRST attached photo, a real photo of the customer's own room. Replace ONLY the floor surface with the tile shown in the SECOND attached photo — ${input.product.name} (${input.product.collection}, ${input.product.size})${description}. This tile's real, exact physical size is ${input.product.size} — a known fact, not a guess. Use this exact size, scaled against the real room's own furniture, doorways, and walls in the first photo, to decide how large each individual tile and its grout lines should appear on the floor; never infer the tile's size from the second photo's crop or aspect ratio, since that photo shows only its color, pattern, and finish. Treat the tile as a repeating flooring material, not as one large image or a single decal: cover the entire visible floor with a creative, believable layout of many individual tiles, with repeated patterns, clear but realistic grout lines, correct perspective, and tile edges that recede toward the distance. Do not place only one or two oversized tiles at the bottom of the room, do not stretch the reference image across the floor, and do not turn it into a seamless slab. Be attentive and deliberate about getting the tile count, spacing, proportion, and perspective right rather than eyeballing it. Keep the exact same room in the result: the same walls, furniture, windows, ceiling, lighting, camera angle, and perspective as the first photo — this is a photo edit, not a newly generated scene. If the source photo is blurry, noisy, poorly exposed, or otherwise low quality, improve it to a clean, sharp, high-definition-looking result with natural detail, balanced lighting, and realistic colors, but do not invent or alter room features to do so. Reproduce the tile's true color, pattern, and finish exactly as shown in the second photo, at the real size stated above. Do not add text, labels, watermarks, swatches, or a collage; return one edited photo of the room only.`,
+        text: `Edit the FIRST attached photo, the customer's own room. Replace ONLY the visible floor surface with the actual catalog tile in the SECOND attached photo — ${input.product.name} (${input.product.collection}, ${input.product.size})${description}.
+${tileInstallationInstructions(input.product, 'floor tile')}
+${repeatReference ? repeatReferenceInstructions(input.product, 'The THIRD attached image (installation proof)') : ''}
+
+The FIRST photo determines room geometry, occlusion, perspective, camera position, and lighting. The SECOND determines the artwork inside each repeated tile. Match the catalog module size against room furniture and doors. Cover the visible floor with correctly sized complete tiles and cut edge tiles; never enlarge one tile or its printed bands to span the room. Keep furniture, rugs, walls, windows, doors, ceiling, and their positions unchanged. Tiles must remain behind furniture and rugs, with realistic contact shadows; do not paint over those objects or change the camera to make tiling easier. Improve poor exposure or noise only without altering room features.
+${TILE_PATTERN_CHECK} Do not add text, labels, watermarks, swatches, or a collage; return one edited photo of the same room only.`,
       },
       { inlineData: { mimeType: input.roomImage.mimeType, data: input.roomImage.data } },
       { inlineData: { mimeType: input.tileImage.mimeType, data: input.tileImage.data } },
+      ...(repeatReference ? [{ inlineData: repeatReference }] : []),
     ]);
   }
 }

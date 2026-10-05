@@ -1,6 +1,6 @@
 import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
-import { badRequest, conflict, notFound } from '@/common/errors/app-error';
+import { badRequest, conflict, forbidden, notFound } from '@/common/errors/app-error';
 import { Language, Prisma, Role, RoomType, StockMovementType, SuitableFor } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -19,7 +19,7 @@ import {
 } from '@/common/utils/stock-status';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { ProductSort, QueryProductsDto } from './dto/query-products.dto';
+import { ProductCatalogStatus, ProductSort, QueryProductsDto } from './dto/query-products.dto';
 import { CalculateQuantityDto } from './dto/calculate-quantity.dto';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import {
@@ -140,6 +140,17 @@ export class ProductsService {
   }
 
   async findAll(query: QueryProductsDto, viewerRole?: Role) {
+    const catalogStatus = query.catalogStatus ?? ProductCatalogStatus.ACTIVE;
+    if (
+      catalogStatus !== ProductCatalogStatus.ACTIVE &&
+      viewerRole !== Role.ADMIN &&
+      viewerRole !== Role.STOCK_MANAGER
+    ) {
+      throw forbidden(
+        'products.inactiveCatalogRestricted',
+        'Inactive tiles are available only to admins and stock managers.',
+      );
+    }
     const sizes =
       query.sizes
         ?.split(',')
@@ -161,12 +172,15 @@ export class ProductsService {
       `roomType=${query.roomType ?? ''}:stockStatus=${query.stockStatus ?? ''}:` +
       `search=${query.search ?? ''}:sort=${query.sort ?? ''}:sizes=${sizes.join(',')}:` +
       `roomTypes=${roomTypes.join(',')}:suitableFors=${suitableFors.join(',')}:` +
-      `stockStatuses=${requestedStockStatuses.join(',')}`;
+      `stockStatuses=${requestedStockStatuses.join(',')}:catalogStatus=${catalogStatus}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return cached;
 
     const where: Prisma.ProductWhereInput = {
-      isActive: true,
+      isActive:
+        catalogStatus === ProductCatalogStatus.ALL
+          ? undefined
+          : catalogStatus === ProductCatalogStatus.ACTIVE,
       collectionId: query.collectionId,
       collection:
         query.size || sizes.length
@@ -395,8 +409,34 @@ export class ProductsService {
 
   async remove(id: string) {
     await this.findOne(id);
-    await this.prisma.product.update({ where: { id }, data: { isActive: false } });
-    await invalidateProductsCache(this.redis, [id]);
+    await this.prisma.product.update({
+      where: { id },
+      data: { isActive: false, recommendationExcluded: true },
+    });
+    await this.invalidateCatalogMembership(id);
+  }
+
+  async reactivate(id: string) {
+    const existing = await this.prisma.product.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) throw notFound('catalog.productNotFound', 'Product not found.');
+    const product = await this.prisma.product.update({
+      where: { id },
+      data: { isActive: true },
+      select: { id: true, isActive: true, recommendationExcluded: true },
+    });
+    await this.invalidateCatalogMembership(id);
+    return product;
+  }
+
+  private async invalidateCatalogMembership(productId: string) {
+    await invalidateProductsCache(this.redis, [productId]);
+    // Collection lists count active products; collection details embed them.
+    await bestEffort('clear the collection catalog cache', () =>
+      Promise.all([
+        this.redis.delByPrefix('cache:collections:list:'),
+        this.redis.delByPrefix('cache:collections:detail:v2:'),
+      ]),
+    );
   }
 
   /** Live check the registration/edit form polls (debounced) as the user types a SKU, so a collision surfaces before submit instead of after. Case-insensitive, since the DB's own unique index is the only place case ever matters for real. */

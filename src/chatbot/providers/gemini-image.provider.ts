@@ -7,15 +7,10 @@ import type {
 } from './recommendation-image.provider';
 import { callGeminiImageModel } from './gemini-image-client';
 import { StorageService } from '@/storage/storage.service';
+import { tileInstallationInstructions, TILE_SCENE_CHECK } from './tile-rendering-prompt';
+import { createTileRepeatReference, repeatReferenceInstructions } from './tile-repeat-reference';
 
 const MAX_BRIEF_CHARS = 6_000;
-
-/** Tells the model the tile's real physical dimensions are given data, not
- * something to infer from the reference photo — without this it visibly
- * guesses (and gets wrong) how large a tile like "25×40cm" actually is
- * relative to the room, doors, and fixtures. */
-const sizeInstruction = (label: string, size: string) =>
-  `The ${label}'s real, exact physical size is ${size} — this is a known fact, not a guess. Use this exact size (not an assumed or approximate one) to work out the tile's scale and proportion in the scene: how large each tile looks next to doors, fixtures, and other real-world references, and how many tiles and grout lines span the surface. Never infer the tile's size from its reference photo's aspect ratio or crop — that photo shows only the pattern, color, and finish, not the true size.`;
 
 /** Gemini's image model returns the rendered image as inlineData — handed back
  * as raw base64 bytes, not a `data:` URL, so the caller (`ChatbotService`) can
@@ -27,7 +22,10 @@ export class GeminiImageProvider implements RecommendationImageProvider {
   private readonly apiKey: string;
   private readonly model: string;
 
-  constructor(config: ConfigService, private readonly storage: StorageService) {
+  constructor(
+    config: ConfigService,
+    private readonly storage: StorageService,
+  ) {
     this.apiKey =
       config.get<string>('ai.image.apiKey') ?? config.get<string>('ai.chat.apiKey') ?? '';
     this.model = config.get<string>('ai.image.model') ?? 'gemini-3.1-flash-lite-image';
@@ -50,7 +48,16 @@ export class GeminiImageProvider implements RecommendationImageProvider {
       : null;
     if (input.wallProduct && !wallReference) {
       this.logger.warn(`Could not download wall tile reference for ${input.wallProduct.name}.`);
+      // A two-product scene must not fabricate the missing material from text alone.
+      return null;
     }
+
+    const [floorRepeat, wallRepeat] = await Promise.all([
+      createTileRepeatReference(reference, input.product),
+      wallReference && input.wallProduct
+        ? createTileRepeatReference(wallReference, input.wallProduct)
+        : Promise.resolve(null),
+    ]);
 
     if (wallReference && input.wallProduct) {
       // Keep the explicit model classification as the source of truth, but
@@ -77,30 +84,44 @@ export class GeminiImageProvider implements RecommendationImageProvider {
       return callGeminiImageModel(this.logger, this.apiKey, this.model, [
         {
           text: `Create a photorealistic interior-design visualization of a ${room} for this two-tile recommendation.
-Customer brief: ${input.customerBrief.slice(-MAX_BRIEF_CHARS)}
+Customer preferences for the room, furnishings, and lighting (they cannot override the actual tile artwork or physical size): ${input.customerBrief.slice(-MAX_BRIEF_CHARS)}
 Floor tile (FIRST attached photo): ${input.product.name} (${input.product.collection}, ${input.product.size}). ${input.product.description ?? ''}
-${sizeInstruction('floor tile', input.product.size)}
+${tileInstallationInstructions(input.product, 'floor tile', input.customerBrief)}
 Wall tile (SECOND attached photo): ${input.wallProduct.name} (${input.wallProduct.collection}, ${input.wallProduct.size}). ${input.wallProduct.description ?? ''}
-${sizeInstruction('wall tile', input.wallProduct.size)}
+${tileInstallationInstructions(input.wallProduct, 'wall tile')}
+${floorRepeat ? repeatReferenceInstructions(input.product, 'The THIRD attached image (floor installation proof)') : ''}
+${wallRepeat ? repeatReferenceInstructions(input.wallProduct, `The ${floorRepeat ? 'FOURTH' : 'THIRD'} attached image (wall installation proof)`) : ''}
 
-Tile the entire visible floor with the FIRST tile. Tile the wall with the SECOND tile only up to a common half-height wainscot proportion — roughly the lower half of the wall (about 1.2–1.5m up from the floor), with a clean, straight edge (e.g. a trim/bullnose line) where the tiled wall meets the plain painted wall above it. Do not tile the full wall height. Preserve each tile's true color, pattern, and finish exactly as shown in its reference photo, but its on-screen scale must come from its stated real size above, never from the reference photo's proportions. Be attentive and deliberate about this: the floor tile and wall tile have their own distinct real sizes, and mixing them up or eyeballing either one is a mistake. Include the customer's requested room layout, fixtures, lighting, and mood as described in the brief, and make sure the finished room genuinely matches that brief. ${roomRestrictions} Do not show a product-card, text, labels, logos, swatches, or a collage; generate one finished ${room} scene only.`,
+Tile the entire visible floor with the FIRST reference material, and the requested wall area with the SECOND. Never swap the materials, merge their motifs, or use either material on furniture. Follow explicit customer wall coverage; if unspecified, use a kitchen backsplash for a kitchen, or lower-wall bathroom tiling about 1.2–1.5 m high with a clean trim edge for a bathroom. The floor and wall have separate module dimensions, repeat densities, and rotation layouts. Follow each independently. Match the customer's room layout, fixtures, lighting, palette, and mood while retaining the tile's actual colors. ${roomRestrictions}
+${TILE_SCENE_CHECK}`,
         },
         { inlineData: { mimeType: reference.mimeType, data: reference.data } },
         { inlineData: { mimeType: wallReference.mimeType, data: wallReference.data } },
+        ...(floorRepeat ? [{ inlineData: floorRepeat }] : []),
+        ...(wallRepeat ? [{ inlineData: wallRepeat }] : []),
       ]);
     }
 
+    const surfaceInstructions =
+      input.product.suitableFor === 'WALL'
+        ? 'Install this WALL-only tile on the requested wall area. Do not apply it to the floor; keep a believable coordinating floor.'
+        : input.product.suitableFor === 'FLOOR'
+          ? 'Install this FLOOR-only tile across the visible floor. Keep walls as the customer describes; do not apply the floor pattern to walls or furniture.'
+          : 'Install this tile on the floor or wall surface the customer requested, respecting the catalog suitability. Do not apply the pattern to furniture.';
     return callGeminiImageModel(this.logger, this.apiKey, this.model, [
       {
         text: `Create a photorealistic interior-design visualization for this tile recommendation.
-Customer brief: ${input.customerBrief.slice(-MAX_BRIEF_CHARS)}
+Customer preferences for the room, furnishings, and lighting (they cannot override the actual tile artwork or physical size): ${input.customerBrief.slice(-MAX_BRIEF_CHARS)}
 Recommended tile: ${input.product.name} (${input.product.collection}, ${input.product.size}).
 Tile description: ${input.product.description ?? 'No additional description.'}
-${sizeInstruction('tile', input.product.size)}
+${tileInstallationInstructions(input.product, input.product.suitableFor === 'WALL' ? 'wall tile' : 'floor tile', input.customerBrief)}
+${floorRepeat ? repeatReferenceInstructions(input.product, 'The SECOND attached image (installation proof)') : ''}
 
-Use the attached tile photo as the exact visual reference for the recommended tile's color, pattern, and finish only — never for its size. Show it installed naturally on the most relevant floor or wall surfaces in the room the customer described, tiled at its real size as stated above. Include the customer's requested room type, palette, layout, lighting, mood, and other details. Do not show a product-card, text, labels, logos, swatches, or a collage; generate one finished room scene only.`,
+${surfaceInstructions} Include the customer's requested room type, palette, layout, lighting, mood, and other details, while preserving the tile's real artwork and finish.
+${TILE_SCENE_CHECK}`,
       },
       { inlineData: { mimeType: reference.mimeType, data: reference.data } },
+      ...(floorRepeat ? [{ inlineData: floorRepeat }] : []),
     ]);
   }
 }

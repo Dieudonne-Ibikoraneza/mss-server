@@ -32,6 +32,10 @@ import {
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ListPostRecommendationInquiriesDto } from './dto/list-post-recommendation-inquiries.dto';
+import {
+  ListRecommendationTilesDto,
+  UpdateRecommendationExclusionDto,
+} from './dto/recommendation-exclusion.dto';
 
 const ROOM_PHOTO_MAX_SIZE = 15 * 1024 * 1024;
 const ROOM_PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -204,6 +208,25 @@ export class ChatbotController {
   @Get('admin/knowledge-base')
   listKnowledgeBaseForAdmin() {
     return this.chatbotService.listKnowledgeBaseForAdmin();
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Search tiles and their AI recommendation eligibility (admin only)' })
+  @Get('admin/recommendation-tiles')
+  listRecommendationTiles(@Query() dto: ListRecommendationTilesDto) {
+    return this.chatbotService.listRecommendationTiles(dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Exclude or restore a tile for AI recommendations (admin only)' })
+  @Patch('admin/recommendation-tiles/:id')
+  updateRecommendationExclusion(
+    @Param('id') id: string,
+    @Body() dto: UpdateRecommendationExclusionDto,
+  ) {
+    return this.chatbotService.updateRecommendationExclusion(id, dto.recommendationExcluded);
   }
 
   @Roles(Role.ADMIN)

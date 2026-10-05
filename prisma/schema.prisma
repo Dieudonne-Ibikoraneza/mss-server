@@ -299,6 +299,8 @@ model Product {
   visualizerPatternCorner VisualizerTileCorner @default(TOP_RIGHT)
   roomTypes      RoomType[]
   isActive       Boolean     @default(true)
+  /// Admin-controlled eligibility for AI recommendations, independent of catalog visibility.
+  recommendationExcluded Boolean @default(false)
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
