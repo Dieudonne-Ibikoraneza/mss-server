@@ -1,8 +1,8 @@
 import { Language } from '@prisma/client';
 import { IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
-/** Matches the frontend's own input cap — also bounds AI provider cost/latency per message. */
-const MAX_CONTENT_LENGTH = 2000;
+/** Allows a complete preference brief; the composer still caps individual answers at 2,000. */
+const MAX_CONTENT_LENGTH = 32_768;
 
 export class SendMessageDto {
   @IsString()

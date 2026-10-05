@@ -23,6 +23,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed:preferences": "ts-node --compiler-options '{\"rootDir\":\".\"}' prisma/seed-profiling-questions.ts",
     "translate:backfill": "ts-node prisma/translate-backfill.ts",
     "check:purchased-area": "ts-node prisma/check-purchased-area.ts",
     "visualizer:patterns": "ts-node prisma/update-visualizer-patterns.ts"

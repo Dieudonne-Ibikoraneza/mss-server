@@ -2,6 +2,7 @@ import { Prisma, PrismaClient, Language, Role, RoomType, SuitableFor } from '@pr
 
 import { emailShell } from './email-templates/email-shell';
 import { paymentRejectedTemplates } from './email-templates/payment-rejected';
+import { seedPreferenceQuestions } from './profiling-questions';
 
 const prisma = new PrismaClient();
 
@@ -500,33 +501,9 @@ async function main() {
   );
   console.log(`Platform settings ready: ${Object.keys(platformSettings).length} rows.`);
 
-  // --- AI customer-profiling questions (doc 3.6) ---------------------------
-  // A question with non-empty roomTypes is conditional: only asked when the
-  // customer picked one of those room types.
-  const profilingQuestions: {
-    text: string;
-    isRequired: boolean;
-    roomTypes: RoomType[];
-  }[] = [
-    { text: 'What is your primary goal for using this space today?', isRequired: true, roomTypes: [] },
-    { text: 'Which room are you designing?', isRequired: true, roomTypes: [] },
-    { text: 'What is the approximate size of the space?', isRequired: true, roomTypes: [] },
-    { text: 'What is the primary wall paint color?', isRequired: true, roomTypes: [] },
-    { text: 'What is the dominant color of your large furniture?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
-    { text: 'What style are the interior doors?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
-    { text: 'Are the tables predominantly wooden or glass?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
-    { text: 'What is the style of your window curtains or blinds?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
-    { text: 'What material are the accent chairs?', isRequired: false, roomTypes: [RoomType.LIVING_ROOM] },
-  ];
-
-  for (const [position, question] of profilingQuestions.entries()) {
-    const existing = await prisma.profilingQuestion.findFirst({
-      where: { text: question.text, language: Language.EN },
-    });
-    if (existing) continue;
-    await prisma.profilingQuestion.create({ data: { ...question, position } });
-  }
-  console.log(`Profiling questions ready: ${profilingQuestions.length} rows.`);
+  // --- AI customer-profiling questions ------------------------------------
+  const preferenceResult = await seedPreferenceQuestions(prisma);
+  console.log('Preference questions ready:', preferenceResult);
 
   console.log('Seed complete.');
 }
