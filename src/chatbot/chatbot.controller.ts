@@ -193,7 +193,9 @@ export class ChatbotController {
   }
 
   @Public()
-  @ApiOperation({ summary: 'List knowledge base entries used to ground the assistant' })
+  @ApiOperation({
+    summary: 'List active English knowledge base entries used to ground the assistant',
+  })
   @Get('knowledge-base')
   listKnowledgeBase(@Query('language') language?: string) {
     void language;
@@ -203,7 +205,7 @@ export class ChatbotController {
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'List all knowledge base entries, including inactive ones (admin only)',
+    summary: 'List English knowledge base entries, including inactive ones (admin only)',
   })
   @Get('admin/knowledge-base')
   listKnowledgeBaseForAdmin() {
@@ -231,7 +233,7 @@ export class ChatbotController {
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a knowledge base entry (admin only)' })
+  @ApiOperation({ summary: 'Create an English knowledge base entry (admin only)' })
   @Post('knowledge-base')
   createKnowledgeBaseEntry(@Body() dto: UpsertKnowledgeBaseEntryDto) {
     return this.chatbotService.createKnowledgeBaseEntry(dto);
@@ -239,7 +241,7 @@ export class ChatbotController {
 
   @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update a knowledge base entry (admin only)' })
+  @ApiOperation({ summary: 'Update an English knowledge base entry (admin only)' })
   @Patch('knowledge-base/:id')
   updateKnowledgeBaseEntry(@Param('id') id: string, @Body() dto: UpdateKnowledgeBaseEntryDto) {
     return this.chatbotService.updateKnowledgeBaseEntry(id, dto);

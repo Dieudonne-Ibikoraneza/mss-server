@@ -5,7 +5,6 @@ import { Language, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { EventsService } from '@/events/events.service';
 import { StorageService } from '@/storage/storage.service';
-import { TranslationService } from '@/translation/translation.service';
 import { ChatbotController } from './chatbot.controller';
 import { ChatbotService } from './chatbot.service';
 import { ChatProvider } from './providers/chat-provider.interface';
@@ -108,7 +107,6 @@ describe('chatbot recommendation exclusions', () => {
       {
         resolveImageUrl: jest.fn().mockImplementation((image: string) => Promise.resolve(image)),
       } as unknown as StorageService,
-      {} as TranslationService,
     );
   });
 

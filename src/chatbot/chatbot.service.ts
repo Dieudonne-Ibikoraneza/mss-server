@@ -30,7 +30,6 @@ import {
   ROOM_TILE_EDIT_PROVIDER,
   type RoomTileEditProvider,
 } from './providers/room-tile-provider.interface';
-import { TranslationService } from '@/translation/translation.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CompareProductsDto } from './dto/compare-products.dto';
 import { ImagePreviewDto } from './dto/media-preview.dto';
@@ -100,7 +99,6 @@ export class ChatbotService {
     @Inject(ROOM_TILE_EDIT_PROVIDER)
     private readonly roomTileProvider: RoomTileEditProvider,
     private readonly storage: StorageService,
-    private readonly translation: TranslationService,
   ) {}
 
   private async getOrCreateConversation(sessionId: string, userId: string, language: Language) {
@@ -175,7 +173,7 @@ export class ChatbotService {
     const [history, knowledgeBase, candidateProducts, lowStockThreshold] = await Promise.all([
       this.recentMessages(conversation.id),
       this.prisma.knowledgeBaseEntry.findMany({
-        where: { isActive: true, language: conversation.language },
+        where: { isActive: true, language: Language.EN },
         take: 10,
       }),
       this.prisma.product.findMany({
@@ -936,13 +934,16 @@ export class ChatbotService {
 
   listKnowledgeBase() {
     return this.prisma.knowledgeBaseEntry.findMany({
-      where: { isActive: true },
+      where: { isActive: true, language: Language.EN },
       orderBy: { updatedAt: 'desc' },
     });
   }
 
   listKnowledgeBaseForAdmin() {
-    return this.prisma.knowledgeBaseEntry.findMany({ orderBy: { updatedAt: 'desc' } });
+    return this.prisma.knowledgeBaseEntry.findMany({
+      where: { language: Language.EN },
+      orderBy: { updatedAt: 'desc' },
+    });
   }
 
   async listRecommendationTiles(dto: ListRecommendationTilesDto) {
@@ -1006,54 +1007,30 @@ export class ChatbotService {
     return { id, recommendationExcluded };
   }
 
-  /**
-   * The assistant grounds itself strictly on entries matching the
-   * conversation's own language (see the `knowledgeBaseEntry.findMany` call
-   * above) — an entry written only in EN is invisible to every RW
-   * conversation. Rather than expect staff to write every entry twice,
-   * creating one in EN auto-creates its RW twin (translated question +
-   * answer, same tags) as a second real row.
-   */
-  async createKnowledgeBaseEntry(dto: UpsertKnowledgeBaseEntryDto) {
-    const entry = await this.prisma.knowledgeBaseEntry.create({
-      data: { ...dto, tags: dto.tags ?? [] },
+  /** English source entries ground all conversations; the provider chooses the reply language. */
+  createKnowledgeBaseEntry(dto: UpsertKnowledgeBaseEntryDto) {
+    return this.prisma.knowledgeBaseEntry.create({
+      data: { ...dto, tags: dto.tags ?? [], language: Language.EN },
     });
-
-    if (entry.language === Language.EN) {
-      const translated = await this.translation.translateFields(
-        { question: entry.question, answer: entry.answer },
-        Language.EN,
-        Language.RW,
-      );
-      if (translated.question && translated.answer) {
-        await this.prisma.knowledgeBaseEntry.create({
-          data: {
-            question: translated.question,
-            answer: translated.answer,
-            tags: entry.tags,
-            language: Language.RW,
-            translatedFromId: entry.id,
-          },
-        });
-      }
-    }
-
-    return entry;
   }
 
   async updateKnowledgeBaseEntry(id: string, dto: UpdateKnowledgeBaseEntryDto) {
-    const existing = await this.prisma.knowledgeBaseEntry.findUnique({ where: { id } });
+    const existing = await this.prisma.knowledgeBaseEntry.findUnique({
+      where: { id, language: Language.EN },
+    });
     if (!existing)
       throw notFound('chatbot.knowledgeEntryNotFound', 'Knowledge base entry not found.');
 
     return this.prisma.knowledgeBaseEntry.update({
       where: { id },
-      data: dto,
+      data: { ...dto, language: Language.EN },
     });
   }
 
   async deleteKnowledgeBaseEntry(id: string) {
-    const existing = await this.prisma.knowledgeBaseEntry.findUnique({ where: { id } });
+    const existing = await this.prisma.knowledgeBaseEntry.findUnique({
+      where: { id, language: Language.EN },
+    });
     if (!existing)
       throw notFound('chatbot.knowledgeEntryNotFound', 'Knowledge base entry not found.');
 

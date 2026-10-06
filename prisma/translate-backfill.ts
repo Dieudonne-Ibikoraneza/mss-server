@@ -1,6 +1,6 @@
 /**
- * One-off sweep that fills in the `*Rw` columns (and knowledge-base RW
- * twins) for every Product/Collection/Room/KnowledgeBaseEntry that predates
+ * One-off sweep that fills in the `*Rw` columns
+ * for every Product/Collection/Room that predates
  * the translation feature (see `src/translation/`) — new/edited rows are
  * translated automatically going forward by the services themselves; this
  * is only for the backlog that already existed.
@@ -11,7 +11,7 @@
  *
  * Run with: npm run translate:backfill
  */
-import { Language, PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -40,7 +40,9 @@ async function translateBatch(texts: string[]): Promise<(string | null)[]> {
   if (!response.ok) {
     throw new Error(`Google Translate API error: HTTP ${response.status}`);
   }
-  const payload = (await response.json()) as { data?: { translations?: { translatedText?: string }[] } };
+  const payload = (await response.json()) as {
+    data?: { translations?: { translatedText?: string }[] };
+  };
   const translations = payload.data?.translations;
   if (!translations || translations.length !== texts.length) {
     throw new Error('Google Translate API returned an unexpected shape.');
@@ -60,7 +62,9 @@ async function translateAll(texts: string[]): Promise<(string | null)[]> {
 
 async function backfillProducts() {
   const products = await prisma.product.findMany({
-    where: { OR: [{ nameRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }] },
+    where: {
+      OR: [{ nameRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }],
+    },
     select: { id: true, name: true, description: true },
   });
   if (products.length === 0) {
@@ -85,7 +89,9 @@ async function backfillProducts() {
 
 async function backfillCollections() {
   const collections = await prisma.collection.findMany({
-    where: { OR: [{ titleRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }] },
+    where: {
+      OR: [{ titleRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }],
+    },
     select: { id: true, title: true, description: true },
   });
   if (collections.length === 0) {
@@ -110,7 +116,9 @@ async function backfillCollections() {
 
 async function backfillRooms() {
   const rooms = await prisma.room.findMany({
-    where: { OR: [{ nameRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }] },
+    where: {
+      OR: [{ nameRw: null }, { AND: [{ description: { not: null } }, { descriptionRw: null }] }],
+    },
     select: { id: true, name: true, description: true },
   });
   if (rooms.length === 0) {
@@ -133,44 +141,6 @@ async function backfillRooms() {
   console.log(`Rooms: translated ${rooms.length}.`);
 }
 
-async function backfillKnowledgeBase() {
-  // Every active EN entry that doesn't already have an RW twin pointing
-  // back at it (via `translations`) — `translatedFromId` is how both this
-  // script and `ChatbotService.createKnowledgeBaseEntry` avoid ever
-  // creating a duplicate twin for the same entry.
-  const entries = await prisma.knowledgeBaseEntry.findMany({
-    where: { language: Language.EN, isActive: true, translations: { none: {} } },
-    select: { id: true, question: true, answer: true, tags: true },
-  });
-  if (entries.length === 0) {
-    console.log('Knowledge base: nothing to translate.');
-    return;
-  }
-
-  const questions = await translateAll(entries.map((e) => e.question));
-  const answers = await translateAll(entries.map((e) => e.answer));
-
-  let created = 0;
-  for (let i = 0; i < entries.length; i++) {
-    const question = questions[i];
-    const answer = answers[i];
-    // `question`/`answer` are required columns — skip rather than create a
-    // half-translated twin when either side came back null.
-    if (!question || !answer) continue;
-    await prisma.knowledgeBaseEntry.create({
-      data: {
-        question,
-        answer,
-        tags: entries[i].tags,
-        language: Language.RW,
-        translatedFromId: entries[i].id,
-      },
-    });
-    created++;
-  }
-  console.log(`Knowledge base: created ${created} of ${entries.length} rw twin(s).`);
-}
-
 async function main() {
   // Deliberately exits before touching any row rather than falling through
   // and writing untranslated English into the `*Rw` columns — that would
@@ -188,7 +158,6 @@ async function main() {
   await backfillProducts();
   await backfillCollections();
   await backfillRooms();
-  await backfillKnowledgeBase();
 }
 
 main()

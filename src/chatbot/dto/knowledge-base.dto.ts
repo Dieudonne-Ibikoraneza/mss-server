@@ -1,5 +1,5 @@
 import { Language } from '@prisma/client';
-import { IsArray, IsBoolean, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class UpsertKnowledgeBaseEntryDto {
   @IsString()
@@ -16,8 +16,8 @@ export class UpsertKnowledgeBaseEntryDto {
   tags?: string[];
 
   @IsOptional()
-  @IsEnum(Language)
-  language?: Language = Language.EN;
+  @IsIn([Language.EN])
+  language?: 'EN' = Language.EN;
 }
 
 export class UpdateKnowledgeBaseEntryDto {
@@ -37,8 +37,8 @@ export class UpdateKnowledgeBaseEntryDto {
   tags?: string[];
 
   @IsOptional()
-  @IsEnum(Language)
-  language?: Language;
+  @IsIn([Language.EN])
+  language?: 'EN';
 
   @IsOptional()
   @IsBoolean()

@@ -7,8 +7,8 @@ import {
 
 /**
  * Null-safe, batching front door onto whichever `TranslationProvider` is
- * wired up (see `TranslationModule`) — every product/collection/room/
- * knowledge-base write goes through this rather than the provider directly,
+ * wired up (see `TranslationModule`) — product/collection/room
+ * writes go through this rather than the provider directly,
  * so "nothing to translate" and "batch these together" only need handling
  * once.
  */
