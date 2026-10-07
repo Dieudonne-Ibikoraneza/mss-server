@@ -179,7 +179,7 @@ describe('OrdersService — the payment window runs from the quotation, and neve
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
-    it('lets sales quote an order that staff created for the customer', async () => {
+    it('does not let sales quote an order that staff created for the customer', async () => {
       prisma.order.findUnique.mockResolvedValue({
         ...pendingHeld,
         createdByType: OrderCreatorType.STAFF,
@@ -187,7 +187,8 @@ describe('OrdersService — the payment window runs from the quotation, and neve
 
       await expect(
         service.sendQuotation('order-1', { transportFee: 5 }, user(Role.SALES_PERSON)),
-      ).resolves.toBeDefined();
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
     });
 
     it('does not let sales take over the quotation of a customer-created order', async () => {

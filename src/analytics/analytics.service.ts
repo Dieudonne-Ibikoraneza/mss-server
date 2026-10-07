@@ -42,6 +42,31 @@ const JOURNEY_ORDER: JourneyStage[] = [
   JourneyStage.PURCHASED,
 ];
 
+type JourneyAction = {
+  id: string;
+  userId: string | null;
+  type: string;
+  summary: string | null;
+  createdAt: Date;
+  detail: unknown;
+};
+
+const JOURNEY_PROFILE_SELECT = {
+  id: true,
+  fullName: true,
+  email: true,
+  phone: true,
+  role: true,
+  status: true,
+} satisfies Prisma.UserSelect;
+
+const quotationRequestState = (order: { status: OrderStatus; quotationStatus: QuotationStatus }) =>
+  order.status === OrderStatus.CANCELLED
+    ? 'CANCELLED'
+    : order.quotationStatus === QuotationStatus.PAYMENT_VERIFIED
+      ? 'RESOLVED'
+      : 'PENDING';
+
 /**
  * Money actually earned, for every revenue figure below: the customer's payment
  * was verified and the order was not cancelled afterwards. Shipping and delivery
@@ -821,6 +846,8 @@ export class AnalyticsService {
    * moment, or none at all. So this number can be smaller than the funnel's
    * for the same stage — that's two different, both-correct questions
    * ("how many got at least this far" vs. "how many events exist here").
+   * Quotation requests use their persisted orders and quote requests instead,
+   * including submissions made before the quotation journey trigger existed.
    */
   async journeyStageDetail(
     stage: JourneyStage,
@@ -828,6 +855,9 @@ export class AnalyticsService {
     viewerRole?: Role,
   ) {
     const resolved = resolvePeriod(period);
+    if (stage === JourneyStage.REQUESTED_QUOTATION) {
+      return this.requestedQuotationStageDetail(resolved);
+    }
 
     const events = await this.prisma.customerJourneyEvent.findMany({
       where: { stage, createdAt: { gte: resolved.from, lt: resolved.to } },
@@ -883,6 +913,107 @@ export class AnalyticsService {
   }
 
   /**
+   * Checkout submits orders for stock review; the older /quotes flow writes
+   * QuoteRequest rows. Read both sources so requests predating the order
+   * journey trigger are visible too, and derive progress from verified payment.
+   */
+  private async requestedQuotationStageDetail(resolved: ResolvedPeriod) {
+    const inRange = { gte: resolved.from, lt: resolved.to };
+    const [orders, quotes] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { createdAt: inRange },
+        include: {
+          customer: { select: JOURNEY_PROFILE_SELECT },
+          _count: { select: { items: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.quoteRequest.findMany({
+        where: { createdAt: inRange },
+        include: {
+          user: { select: JOURNEY_PROFILE_SELECT },
+          order: { select: { status: true, quotationStatus: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+    const orderIds = new Set(orders.map((order) => order.id));
+    const requests = [
+      ...orders.map((order) => ({
+        id: order.id,
+        userId: order.customerId,
+        profile: order.customer,
+        createdAt: order.createdAt,
+        detail: {
+          status: quotationRequestState(order),
+          quotationStatus: order.quotationStatus,
+          itemCount: order._count.items,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+        },
+      })),
+      // A converted quote and its order represent one request in this period.
+      ...quotes
+        .filter((quote) => !quote.orderId || !orderIds.has(quote.orderId))
+        .map((quote) => ({
+          id: quote.id,
+          userId: quote.userId,
+          profile: quote.user,
+          createdAt: quote.createdAt,
+          detail: {
+            status: quote.order
+              ? quotationRequestState(quote.order)
+              : quote.status === 'DECLINED'
+                ? 'DECLINED'
+                : 'PENDING',
+            itemCount: Array.isArray(quote.items) ? quote.items.length : 0,
+            orderId: quote.orderId,
+            orderNumber: null,
+          },
+        })),
+    ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const actions: JourneyAction[] = requests.map((request) => ({
+      id: request.id,
+      userId: request.userId,
+      createdAt: request.createdAt,
+      detail: request.detail,
+      type: 'QUOTE_REQUESTED',
+      summary: `Requested a quotation (${request.detail.itemCount} items)`,
+    }));
+    const usersById = new Map<
+      string,
+      {
+        sessionId: string;
+        userId: string;
+        reachedAt: Date;
+        metadata: { orderId: string | null };
+        profile: (typeof requests)[number]['profile'];
+      }
+    >();
+    for (const request of requests) {
+      if (!usersById.has(request.userId)) {
+        usersById.set(request.userId, {
+          sessionId: request.userId,
+          userId: request.userId,
+          reachedAt: request.createdAt,
+          metadata: { orderId: request.detail.orderId },
+          profile: request.profile,
+        });
+      }
+    }
+    const users = [...usersById.values()];
+    const stage = JourneyStage.REQUESTED_QUOTATION;
+    return {
+      stage,
+      period: resolved.period,
+      userCount: users.length,
+      users,
+      actions,
+      metrics: this.journeyStageMetrics(stage, users.length, users.length, actions),
+    };
+  }
+
+  /**
    * The KPI strip above a stage's drill-down ledger — deliberately different
    * per stage (doc: "for others, it is the same functionality/features... if
    * it is the other step, it should have different actions and everything"),
@@ -919,7 +1050,8 @@ export class AnalyticsService {
 
       case JourneyStage.REQUESTED_QUOTATION: {
         const quotes = actions as unknown as { detail: { status: string; itemCount: number } }[];
-        const pending = quotes.filter((row) => row.detail.status === 'REQUESTED').length;
+        const pending = quotes.filter((row) => row.detail.status === 'PENDING').length;
+        const resolved = quotes.filter((row) => row.detail.status === 'RESOLVED').length;
         const avgItems = quotes.length
           ? quotes.reduce((sum, row) => sum + row.detail.itemCount, 0) / quotes.length
           : 0;
@@ -927,6 +1059,7 @@ export class AnalyticsService {
           ...base,
           { key: 'totalQuotes', value: quotes.length },
           { key: 'pendingQuotes', value: pending },
+          { key: 'resolvedQuotes', value: resolved },
           { key: 'avgItemsPerQuote', value: Math.round(avgItems * 10) / 10 },
         ];
       }
@@ -1005,7 +1138,7 @@ export class AnalyticsService {
       case JourneyStage.ENTERED_DIMENSIONS: {
         const entries = actions
           .map((row) =>
-            row.detail && typeof row.detail === 'object' && 'areaSqm' in (row.detail as object)
+            row.detail && typeof row.detail === 'object' && 'areaSqm' in row.detail
               ? Number((row.detail as { areaSqm?: unknown }).areaSqm)
               : undefined,
           )
@@ -1046,7 +1179,7 @@ export class AnalyticsService {
       metadata: Prisma.JsonValue;
     }[],
     viewerRole?: Role,
-  ) {
+  ): Promise<JourneyAction[]> {
     const inRange = { gte: resolved.from, lt: resolved.to };
 
     switch (stage) {
@@ -1080,26 +1213,6 @@ export class AnalyticsService {
               productName: tile.product.name,
               image: tileImageById.get(tile.product.id) ?? tile.product.image,
             })),
-          },
-        }));
-      }
-
-      case JourneyStage.REQUESTED_QUOTATION: {
-        const quotes = await this.prisma.quoteRequest.findMany({
-          where: { userId: { in: userIds }, createdAt: inRange },
-          orderBy: { createdAt: 'desc' },
-        });
-        return quotes.map((quote) => ({
-          id: quote.id,
-          userId: quote.userId,
-          type: 'QUOTE_REQUESTED',
-          summary: `Requested a quote (${Array.isArray(quote.items) ? quote.items.length : 0} item${Array.isArray(quote.items) && quote.items.length === 1 ? '' : 's'})`,
-          createdAt: quote.createdAt,
-          detail: {
-            status: quote.status,
-            items: quote.items,
-            itemCount: Array.isArray(quote.items) ? quote.items.length : 0,
-            orderId: quote.orderId,
           },
         }));
       }

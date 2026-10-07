@@ -113,7 +113,7 @@ describe('OrdersService#verifyPayment — a single winner', () => {
     await expect(service.verifyPayment('o1', staff)).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('lets sales verify payment for a staff-created order', async () => {
+  it('does not let sales verify payment for a staff-created order', async () => {
     const { service, tx } = build(1);
     tx.order.findUniqueOrThrow.mockResolvedValue({ id: 'o1' });
     jest.spyOn(service, 'promoteWaitlistedOrders').mockResolvedValue(undefined);
@@ -123,7 +123,8 @@ describe('OrdersService#verifyPayment — a single winner', () => {
         id: 'sales-1',
         role: Role.SALES_PERSON,
       } as AuthenticatedUser),
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.order.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not let sales verify a customer-created order', async () => {

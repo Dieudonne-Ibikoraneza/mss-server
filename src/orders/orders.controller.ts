@@ -135,7 +135,7 @@ export class OrdersController {
 
   @Roles(Role.ADMIN, Role.STOCK_MANAGER)
   @ApiOperation({
-    summary: 'Verify a submitted payment (admin/stock, or sales for staff-created orders)',
+    summary: 'Verify a submitted payment (admin/stock)',
   })
   @Post(':id/quotation/verify')
   verifyPayment(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {

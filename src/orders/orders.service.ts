@@ -974,6 +974,14 @@ export class OrdersService {
         lineItems.map((line) => line.product.id),
       ),
     );
+    await this.bestEffort(`quotation request event for order ${order.id}`, () =>
+      this.events.recordJourneyEvent({
+        userId: customerId,
+        sessionId: customerId,
+        stage: 'REQUESTED_QUOTATION',
+        metadata: { orderId: order.id },
+      }),
+    );
     await this.bestEffort(`journey event for order ${order.id}`, async () => {
       await this.events.recordJourneyEvent({
         userId: customerId,
@@ -1518,7 +1526,7 @@ export class OrdersService {
 
   private assertCanManageQuotation(
     actingUser: AuthenticatedUser,
-    order: { createdByType: OrderCreatorType },
+    _order: { createdByType: OrderCreatorType },
   ) {
     if (QUOTATION_ROLES.includes(actingUser.role)) return;
     throw forbidden(
