@@ -6,7 +6,18 @@ export enum CollectionSort {
   OLDEST = 'oldest',
 }
 
+export enum CollectionCatalogStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+  ALL = 'all',
+}
+
 export class QueryCollectionsDto extends PaginationDto {
+  /** Inactive collections are visible only to admins and stock managers. */
+  @IsOptional()
+  @IsEnum(CollectionCatalogStatus)
+  catalogStatus?: CollectionCatalogStatus = CollectionCatalogStatus.ACTIVE;
+
   @IsOptional()
   @IsString()
   search?: string;

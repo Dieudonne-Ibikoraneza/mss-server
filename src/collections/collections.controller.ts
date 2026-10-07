@@ -76,8 +76,8 @@ export class CollectionsController {
   @Public()
   @ApiOperation({ summary: 'List collections' })
   @Get()
-  findAll(@Query() query: QueryCollectionsDto) {
-    return this.collectionsService.findAll(query);
+  findAll(@Query() query: QueryCollectionsDto, @CurrentUser() user?: AuthenticatedUser) {
+    return this.collectionsService.findAll(query, user?.role);
   }
 
   @Public()
@@ -87,25 +87,25 @@ export class CollectionsController {
     return this.collectionsService.findOne(id, user?.role);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a collection (admin/stock manager)' })
+  @ApiOperation({ summary: 'Create a collection (admin only)' })
   @Post()
   create(@Body() dto: CreateCollectionDto) {
     return this.collectionsService.create(dto);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update a collection (admin/stock manager)' })
+  @ApiOperation({ summary: 'Update or reactivate a collection (admin only)' })
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateCollectionDto) {
     return this.collectionsService.update(id, dto);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete a collection (admin/stock manager)' })
+  @ApiOperation({ summary: 'Deactivate a collection (admin only)' })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.collectionsService.remove(id);

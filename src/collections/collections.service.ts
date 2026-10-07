@@ -1,6 +1,6 @@
 import { bestEffort } from '@/redis/best-effort';
 import { Injectable } from '@nestjs/common';
-import { notFound } from '@/common/errors/app-error';
+import { forbidden, notFound } from '@/common/errors/app-error';
 import { Language, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
@@ -9,7 +9,11 @@ import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { CreateCollectionDto } from './dto/create-collection.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
-import { CollectionSort, QueryCollectionsDto } from './dto/query-collections.dto';
+import {
+  CollectionCatalogStatus,
+  CollectionSort,
+  QueryCollectionsDto,
+} from './dto/query-collections.dto';
 import { COLLECTION_IMAGES_BUCKET, StorageService } from '@/storage/storage.service';
 import { TranslationService } from '@/translation/translation.service';
 
@@ -28,13 +32,27 @@ export class CollectionsService {
     private readonly translation: TranslationService,
   ) {}
 
-  async findAll(query: QueryCollectionsDto) {
-    const cacheKey = `${LIST_CACHE_PREFIX}page=${query.page}:limit=${query.limit}:search=${query.search ?? ''}:size=${query.size ?? ''}:sort=${query.sort ?? ''}`;
+  async findAll(query: QueryCollectionsDto, viewerRole?: Role) {
+    const catalogStatus = query.catalogStatus ?? CollectionCatalogStatus.ACTIVE;
+    if (
+      catalogStatus !== CollectionCatalogStatus.ACTIVE &&
+      viewerRole !== Role.ADMIN &&
+      viewerRole !== Role.STOCK_MANAGER
+    ) {
+      throw forbidden(
+        'collections.inactiveCatalogRestricted',
+        'Inactive collections are available only to admins and stock managers.',
+      );
+    }
+    const cacheKey = `${LIST_CACHE_PREFIX}page=${query.page}:limit=${query.limit}:search=${query.search ?? ''}:size=${query.size ?? ''}:sort=${query.sort ?? ''}:catalogStatus=${catalogStatus}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return cached;
 
     const where = {
-      isActive: true,
+      isActive:
+        catalogStatus === CollectionCatalogStatus.ALL
+          ? undefined
+          : catalogStatus === CollectionCatalogStatus.ACTIVE,
       size: query.size,
       title: query.search ? { contains: query.search, mode: 'insensitive' as const } : undefined,
     };

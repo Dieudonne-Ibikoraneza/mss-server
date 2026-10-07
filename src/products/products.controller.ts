@@ -115,25 +115,25 @@ export class ProductsController {
     return this.productsService.calculateQuantity(dto);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a product (admin/stock manager)' })
+  @ApiOperation({ summary: 'Create a product (admin only)' })
   @Post()
   create(@Body() dto: CreateProductDto, @CurrentUser('id') userId: string) {
     return this.productsService.create(dto, userId);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update a product (admin/stock manager)' })
+  @ApiOperation({ summary: 'Update a product (admin only)' })
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateProductDto) {
     return this.productsService.update(id, dto);
   }
 
-  @Roles(Role.ADMIN, Role.STOCK_MANAGER)
+  @Roles(Role.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete a product (admin/stock manager)' })
+  @ApiOperation({ summary: 'Deactivate a product (admin only)' })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.productsService.remove(id);
