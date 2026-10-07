@@ -279,6 +279,18 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto, createdById?: string) {
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: dto.collectionId },
+      select: { isActive: true },
+    });
+    if (!collection) throw notFound('collections.notFound', 'Collection not found.');
+    if (!collection.isActive) {
+      throw badRequest(
+        'products.inactiveCollection',
+        'New products cannot be created in an inactive collection. Reactivate the collection first.',
+      );
+    }
+
     const initialAreaSqm = dto.initialAreaSqm ?? 0;
     // Cost is entered per m² now, same unit as `price` and as stock itself —
     // no more box/piece conversion needed to store it.
