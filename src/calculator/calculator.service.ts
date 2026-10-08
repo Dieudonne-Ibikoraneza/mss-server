@@ -4,6 +4,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { availableAreaSqmOf } from '@/common/utils/stock-status';
 import { FloorPlanDto } from './dto/floor-plan.dto';
+import { calculateBaseboard } from './baseboard-calculator';
 
 @Injectable()
 export class CalculatorService {
@@ -34,28 +35,74 @@ export class CalculatorService {
     const wastagePercent = dto.wastagePercent ?? 10;
     const areaWithWastage = baseArea * (1 + wastagePercent / 100);
 
-    const quantity = calculateTileQuantity(areaWithWastage, {
+    const packaging = {
       tileAreaSqm: Number(product.collection.tileAreaSqm),
       boxCoverageSqm: Number(product.boxCoverageSqm),
       piecesPerBox: product.piecesPerBox,
-    });
+    };
+    const unitPrice = Number(product.price);
+    const floorQuantity = calculateTileQuantity(areaWithWastage, packaging);
+    let baseboard: ReturnType<typeof calculateBaseboard> | null = null;
+    if (dto.baseboard) {
+      const perimeterM =
+        dto.baseboard.perimeterM ??
+        (dto.length && dto.width && dto.totalAreaSqm === undefined
+          ? 2 * (dto.length + dto.width)
+          : undefined);
+      if (!perimeterM) {
+        throw badRequest(
+          'calculator.baseboardPerimeterRequired',
+          'Enter the room perimeter to calculate baseboards when using a total area.',
+        );
+      }
+      baseboard = calculateBaseboard({
+        size: product.collection.size,
+        tileAreaSqm: packaging.tileAreaSqm,
+        perimeterM,
+        heightCm: dto.baseboard.heightCm,
+        openingsWidthM: dto.baseboard.openingsWidthM ?? 0,
+        cutWidthMm: dto.baseboard.cutWidthMm ?? 3,
+        wastagePercent: dto.baseboard.wastagePercent ?? wastagePercent,
+        unitPrice,
+      });
+    }
+    // Each part reserves whole tiles. Pool those tiles into one packaging and
+    // cart calculation for the selected product, without adding wastage twice.
+    const totalPieces = floorQuantity.totalPieces + (baseboard?.totalTiles ?? 0);
+    const combinedBoxes = Math.floor(totalPieces / packaging.piecesPerBox);
+    const combinedPieces = totalPieces % packaging.piecesPerBox;
+    const requiredAreaSqm =
+      baseboard && baseboard.totalTiles > 0
+        ? Math.round(
+            (combinedBoxes * packaging.boxCoverageSqm + combinedPieces * packaging.tileAreaSqm) *
+              1_000_000,
+          ) / 1_000_000
+        : areaWithWastage;
+    const quantity =
+      baseboard && baseboard.totalTiles > 0
+        ? calculateTileQuantity(requiredAreaSqm, packaging)
+        : floorQuantity;
 
-    // Stock is held in m²; convert to pieces here only to split this specific
-    // request between what's on hand and what needs sourcing — never stored
-    // that way. Other customers' unpaid orders can be holding part of it
-    // (`reservedAreaSqm`), so "from stock" here means "actually available to
-    // buy right now", not just what's physically on the shelf.
+    // Compare the actual area the cart will reserve, including any declared
+    // box coverage. Other customers' holds reduce what's available to buy.
     const tileAreaSqm = Number(product.collection.tileAreaSqm);
     const availableAreaSqm = availableAreaSqmOf(
       Number(product.quantityOnHandSqm),
       Number(product.reservedAreaSqm),
     );
-    const availablePieces = Math.floor(availableAreaSqm / tileAreaSqm);
-    const fromStockPieces = Math.min(availablePieces, quantity.totalPieces);
-    const toSourcePieces = quantity.totalPieces - fromStockPieces;
+    const fullyAvailableFromStock =
+      Math.round(quantity.purchasedArea * 1_000_000) <= Math.round(availableAreaSqm * 1_000_000);
 
     // Priced by area, not by the box — see `orders.service.ts#create`.
-    const estimatedCost = quantity.purchasedArea * Number(product.price);
+    const estimatedCost = quantity.purchasedArea * unitPrice;
+    const floorCost = floorQuantity.purchasedArea * unitPrice;
+    if (baseboard) {
+      // Allocate the actual extra cost after pooling boxes, including any
+      // difference between declared box coverage and summed tile areas.
+      baseboard.purchasedAreaSqm =
+        Math.round((quantity.purchasedArea - floorQuantity.purchasedArea) * 1_000_000) / 1_000_000;
+      baseboard.estimatedCost = baseboard.purchasedAreaSqm * unitPrice;
+    }
 
     // Only the qualitative outcome leaves the server here: this endpoint is
     // `@Public()`, and returning `fromStockPieces`/`toSourcePieces` would hand
@@ -66,11 +113,17 @@ export class CalculatorService {
     return {
       baseAreaSqm: baseArea,
       wastagePercent,
-      requiredAreaSqm: areaWithWastage,
+      requiredAreaSqm,
+      floor: {
+        requiredAreaSqm: areaWithWastage,
+        quantity: floorQuantity,
+        estimatedCost: floorCost,
+      },
+      baseboard,
       quantity,
       stockSplit: {
-        fullyAvailableFromStock: toSourcePieces === 0,
-        partiallyAvailableFromStock: fromStockPieces > 0 && toSourcePieces > 0,
+        fullyAvailableFromStock,
+        partiallyAvailableFromStock: !fullyAvailableFromStock && availableAreaSqm >= tileAreaSqm,
       },
       estimatedCost,
       currency: product.currency,

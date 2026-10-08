@@ -10,7 +10,9 @@ export class CalculatorController {
   constructor(private readonly calculatorService: CalculatorService) {}
 
   @Public()
-  @ApiOperation({ summary: 'Calculate tile quantity from a floor plan' })
+  @ApiOperation({
+    summary: 'Calculate floor tiles and optional baseboards cut from the selected tile',
+  })
   @Post('floor-plan')
   calculate(@Body() dto: FloorPlanDto) {
     return this.calculatorService.calculate(dto);
