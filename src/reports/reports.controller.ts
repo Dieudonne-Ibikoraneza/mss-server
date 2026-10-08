@@ -32,6 +32,21 @@ export class ReportsController {
     return this.reportsService.stockMovements(query);
   }
 
+  @ApiOperation({
+    summary:
+      'Complete stock report data for printing and export, with the selected movement filter',
+  })
+  @Get('stock/export')
+  stockReportExport(@Query() query: QueryMovementsDto) {
+    return this.reportsService.stockReportExport(query);
+  }
+
+  @ApiOperation({ summary: 'All matching stock movements for printing and export' })
+  @Get('stock/movements/export')
+  stockMovementsExport(@Query() query: QueryMovementsDto) {
+    return this.reportsService.stockMovementsExport(query);
+  }
+
   @ApiOperation({ summary: 'Products at or below their low-stock threshold' })
   @Get('stock/low-stock')
   lowStock() {

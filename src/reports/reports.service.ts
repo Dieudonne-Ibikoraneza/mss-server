@@ -3,7 +3,12 @@ import { OrderStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
-import { AnalyticsPeriod, bucketize, resolvePeriod } from '@/common/utils/analytics-period';
+import {
+  AnalyticsPeriod,
+  bucketize,
+  resolvePeriod,
+  type ResolvedPeriod,
+} from '@/common/utils/analytics-period';
 import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import { QueryMovementsDto } from './dto/query-movements.dto';
 
@@ -23,8 +28,10 @@ export class ReportsService {
   ) {}
 
   async stockSummary(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY) {
-    const resolved = resolvePeriod(period);
+    return this.stockSummaryForPeriod(resolvePeriod(period));
+  }
 
+  private async stockSummaryForPeriod(resolved: ResolvedPeriod) {
     const [movements, products, lowStockThreshold] = await Promise.all([
       this.prisma.stockAdjustment.findMany({
         where: { createdAt: { gte: resolved.from, lt: resolved.to } },
@@ -103,8 +110,60 @@ export class ReportsService {
     return paginate(items, total, query.page, query.limit);
   }
 
+  private movementRowsForExport(query: QueryMovementsDto, resolved: ResolvedPeriod) {
+    return this.prisma.stockAdjustment.findMany({
+      where: {
+        createdAt: { gte: resolved.from, lt: resolved.to },
+        type: query.type,
+        productId: query.productId,
+      },
+      include: {
+        product: { select: { id: true, name: true, sku: true } },
+        adjustedBy: { select: { id: true, fullName: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  }
+
+  /** One complete read of the selected journal, independent of the visible page. */
+  async stockMovementsExport(query: QueryMovementsDto) {
+    const generatedAt = new Date();
+    const resolved = resolvePeriod(query.period, generatedAt);
+    return {
+      generatedAt,
+      period: resolved.period,
+      from: resolved.from,
+      to: resolved.to,
+      movementType: query.type ?? 'ALL',
+      items: await this.movementRowsForExport(query, resolved),
+    };
+  }
+
+  /** Inventory and fulfilment are current; movement totals use one captured reporting window. */
+  async stockReportExport(query: QueryMovementsDto) {
+    const generatedAt = new Date();
+    const resolved = resolvePeriod(query.period, generatedAt);
+    const [summary, movements, lowStock, fulfillment] = await Promise.all([
+      this.stockSummaryForPeriod(resolved),
+      this.movementRowsForExport(query, resolved),
+      this.lowStock(null),
+      this.fulfillmentQueue(null),
+    ]);
+    return {
+      generatedAt,
+      period: resolved.period,
+      from: resolved.from,
+      to: resolved.to,
+      movementType: query.type ?? 'ALL',
+      summary,
+      movements,
+      lowStock,
+      fulfillment,
+    };
+  }
+
   /** The alert list the stock overview leads with: what needs restocking, worst first. */
-  async lowStock(limit = 20) {
+  async lowStock(limit: number | null = 20) {
     const [products, lowStockThreshold] = await Promise.all([
       this.prisma.product.findMany({
         where: { isActive: true },
@@ -126,7 +185,7 @@ export class ReportsService {
       .map((row) => ({ ...row, quantityOnHandSqm: Number(row.quantityOnHandSqm) }))
       .filter((row) => row.quantityOnHandSqm <= lowStockThreshold)
       .sort((a, b) => a.quantityOnHandSqm - b.quantityOnHandSqm)
-      .slice(0, limit);
+      .slice(0, limit ?? products.length);
 
     // A product's stored `image` is a bare private-bucket path for anything
     // uploaded through the app — resolve it (only for the rows actually
@@ -149,7 +208,7 @@ export class ReportsService {
   }
 
   /** Orders the warehouse still has to act on, for the stock overview's fulfilment queue. */
-  async fulfillmentQueue(limit = 20) {
+  async fulfillmentQueue(limit: number | null = 20) {
     const pendingStatuses: OrderStatus[] = [
       OrderStatus.PENDING,
       OrderStatus.PROCESSING,
@@ -165,7 +224,7 @@ export class ReportsService {
           delivery: true,
         },
         orderBy: { createdAt: 'asc' },
-        take: limit,
+        take: limit ?? undefined,
       }),
       this.prisma.order.groupBy({
         by: ['status'],
