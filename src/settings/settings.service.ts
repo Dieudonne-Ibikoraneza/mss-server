@@ -16,6 +16,11 @@ import {
   ReorderProfilingQuestionsDto,
   UpdateProfilingQuestionDto,
 } from './dto/profiling-question.dto';
+import {
+  CreateFollowUpQuestionDto,
+  ReorderFollowUpQuestionsDto,
+  UpdateFollowUpQuestionDto,
+} from './dto/follow-up-question.dto';
 
 /**
  * Admin-panel configuration (doc 3.10 "Configure system settings"): the
@@ -84,6 +89,84 @@ export class SettingsService {
       );
     }
     return this.findAll();
+  }
+
+  // --- Suggested chatbot follow-ups ----------------------------------------
+
+  listFollowUpQuestions() {
+    return this.prisma.chatbotFollowUp.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: { id: true, text: true, position: true },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  listAdminFollowUpQuestions() {
+    return this.prisma.chatbotFollowUp.findMany({
+      where: { deletedAt: null },
+      select: { id: true, text: true, position: true, isActive: true },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  async createFollowUpQuestion(dto: CreateFollowUpQuestionDto) {
+    const last = await this.prisma.chatbotFollowUp.findFirst({
+      where: { deletedAt: null },
+      orderBy: { position: 'desc' },
+      select: { position: true },
+    });
+    return this.prisma.chatbotFollowUp.create({
+      data: { ...dto, position: (last?.position ?? -1) + 1 },
+    });
+  }
+
+  async updateFollowUpQuestion(id: string, dto: UpdateFollowUpQuestionDto) {
+    await this.findFollowUpQuestion(id);
+    return this.prisma.chatbotFollowUp.update({ where: { id }, data: dto });
+  }
+
+  async removeFollowUpQuestion(id: string) {
+    await this.findFollowUpQuestion(id);
+    // A tombstone also prevents a later seed run from restoring a deleted default.
+    await this.prisma.chatbotFollowUp.update({
+      where: { id },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+  }
+
+  private async findFollowUpQuestion(id: string) {
+    const row = await this.prisma.chatbotFollowUp.findUnique({ where: { id } });
+    if (!row || row.deletedAt)
+      throw notFound('settings.followUpNotFound', 'Follow-up question not found.');
+    return row;
+  }
+
+  async reorderFollowUpQuestions(dto: ReorderFollowUpQuestionsDto) {
+    // Validate the complete list before writing so a stale admin screen cannot
+    // silently leave newly added suggestions in the wrong position.
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.chatbotFollowUp.findMany({
+        where: { deletedAt: null },
+        select: { id: true },
+      });
+      const ids = new Set(dto.ids);
+      if (
+        ids.size !== dto.ids.length ||
+        rows.length !== ids.size ||
+        rows.some((row) => !ids.has(row.id))
+      ) {
+        throw badRequest(
+          'settings.followUpOrderChanged',
+          'The follow-up list has changed. Refresh it and try again.',
+        );
+      }
+      await Promise.all(
+        dto.ids.map((id, position) =>
+          tx.chatbotFollowUp.update({ where: { id }, data: { position } }),
+        ),
+      );
+    });
+    return this.listAdminFollowUpQuestions();
   }
 
   // --- Customer profiling questions -----------------------------------------

@@ -3,6 +3,7 @@ import { Prisma, PrismaClient, Language, Role, RoomType, SuitableFor } from '@pr
 import { emailShell } from './email-templates/email-shell';
 import { paymentRejectedTemplates } from './email-templates/payment-rejected';
 import { seedPreferenceQuestions } from './profiling-questions';
+import { seedChatbotFollowUps } from './chatbot-follow-ups';
 
 const prisma = new PrismaClient();
 
@@ -504,6 +505,9 @@ async function main() {
   // --- AI customer-profiling questions ------------------------------------
   const preferenceResult = await seedPreferenceQuestions(prisma);
   console.log('Preference questions ready:', preferenceResult);
+
+  const followUpResult = await seedChatbotFollowUps(prisma);
+  console.log('Chatbot follow-up questions ready:', followUpResult);
 
   console.log('Seed complete.');
 }

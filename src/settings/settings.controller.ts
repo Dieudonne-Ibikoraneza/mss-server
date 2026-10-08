@@ -10,6 +10,7 @@ import {
   Post,
   Query,
   ParseEnumPipe,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Language, Role, RoomType } from '@prisma/client';
@@ -23,6 +24,11 @@ import {
   ReorderProfilingQuestionsDto,
   UpdateProfilingQuestionDto,
 } from './dto/profiling-question.dto';
+import {
+  CreateFollowUpQuestionDto,
+  ReorderFollowUpQuestionsDto,
+  UpdateFollowUpQuestionDto,
+} from './dto/follow-up-question.dto';
 
 @ApiTags('settings')
 @ApiBearerAuth()
@@ -52,6 +58,47 @@ export class SettingsController {
   @Patch()
   update(@Body() dto: UpdateSettingsDto, @CurrentUser('id') userId: string) {
     return this.settingsService.update(dto.settings, userId);
+  }
+
+  @Public()
+  @ApiOperation({ summary: 'List active chatbot follow-up suggestions' })
+  @Get('follow-up-questions')
+  listFollowUpQuestions() {
+    return this.settingsService.listFollowUpQuestions();
+  }
+
+  @Roles(Role.ADMIN)
+  @Get('follow-up-questions/admin')
+  listAdminFollowUpQuestions() {
+    return this.settingsService.listAdminFollowUpQuestions();
+  }
+
+  @Roles(Role.ADMIN)
+  @Post('follow-up-questions')
+  createFollowUpQuestion(@Body() dto: CreateFollowUpQuestionDto) {
+    return this.settingsService.createFollowUpQuestion(dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @Patch('follow-up-questions/reorder')
+  reorderFollowUpQuestions(@Body() dto: ReorderFollowUpQuestionsDto) {
+    return this.settingsService.reorderFollowUpQuestions(dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @Patch('follow-up-questions/:id')
+  updateFollowUpQuestion(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateFollowUpQuestionDto,
+  ) {
+    return this.settingsService.updateFollowUpQuestion(id, dto);
+  }
+
+  @Roles(Role.ADMIN)
+  @Delete('follow-up-questions/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeFollowUpQuestion(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.settingsService.removeFollowUpQuestion(id);
   }
 
   @Public()

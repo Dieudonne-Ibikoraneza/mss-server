@@ -886,6 +886,19 @@ model PlatformSetting {
   updatedAt DateTime @updatedAt
 }
 
+/// Admin-managed prompt suggestions shown after chatbot recommendations.
+model ChatbotFollowUp {
+  id        String   @id @default(uuid())
+  text      String
+  position  Int      @default(0)
+  isActive  Boolean  @default(true)
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, position])
+}
+
 /// The customer-profiling questions the AI recommendation flow asks (3.6:
 /// "room type, room size, wall paint color, if room type is living room ask
 /// furniture color, doors, tables, curtains, chairs"). A question with a
