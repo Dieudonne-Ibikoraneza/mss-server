@@ -37,10 +37,16 @@ export const calculateTileQuantity = (
   packaging: TilePackaging,
 ): TileQuantity => {
   const area = Math.max(0, Number.isFinite(requiredArea) ? requiredArea : 0);
-  const completeBoxes = Math.floor(area / packaging.boxCoverageSqm);
+  // Integer area units avoid ratios like 0.27 / 0.09 becoming
+  // 3.0000000000000004 and purchasing a fourth piece.
+  const completeBoxes = Math.floor(
+    Math.round(area * 1_000_000) / Math.round(packaging.boxCoverageSqm * 1_000_000),
+  );
   const boxArea = roundArea(completeBoxes * packaging.boxCoverageSqm);
   const remainingArea = roundArea(Math.max(0, area - boxArea));
-  const remainingPieces = Math.ceil(remainingArea / packaging.tileAreaSqm);
+  const remainingPieces = Math.ceil(
+    Math.round(remainingArea * 1_000_000) / Math.round(packaging.tileAreaSqm * 1_000_000),
+  );
 
   return {
     ...packaging,
