@@ -18,7 +18,11 @@ import { EventsService } from '@/events/events.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { StorageService } from '@/storage/storage.service';
 import { paginate } from '@/common/dto/pagination.dto';
-import { availableAreaSqmOf, canSeeExactStock } from '@/common/utils/stock-status';
+import {
+  availableAreaSqmOf,
+  canSeeExactStock,
+  canSeeFullInventory,
+} from '@/common/utils/stock-status';
 import { calculateTileQuantity } from '@/common/utils/tile-calculator';
 import { invalidateProductsCache } from '@/products/products-cache.util';
 import type { AuthenticatedUser } from '@/auth/types/authenticated-user.type';
@@ -65,7 +69,7 @@ function sanitizeOrder<T extends { items: readonly { product: Record<string, unk
   order: T,
   viewerRole: Role,
 ): T {
-  if (canSeeExactStock(viewerRole)) return order;
+  if (canSeeFullInventory(viewerRole)) return order;
   return {
     ...order,
     // Older waitlisted orders stored "(requested N sqm, M sqm available)" in
@@ -81,9 +85,27 @@ function sanitizeOrder<T extends { items: readonly { product: Record<string, unk
       : {}),
     items: order.items.map((item) => {
       if (!item.product) return item;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...productRest } = item.product;
-      return { ...item, product: productRest };
+      const quantityOnHandSqm = item.product.quantityOnHandSqm;
+      const productRest = { ...item.product };
+      for (const field of [
+        'quantityOnHandSqm',
+        'reservedAreaSqm',
+        'averageCostPrice',
+        'inventoryValue',
+        'onHandBreakdown',
+      ]) {
+        delete productRest[field];
+      }
+      const onHand = quantityOnHandSqm == null ? undefined : Number(quantityOnHandSqm);
+      return {
+        ...item,
+        product: {
+          ...productRest,
+          ...(canSeeExactStock(viewerRole) && onHand !== undefined && Number.isFinite(onHand)
+            ? { quantityOnHandSqm: onHand }
+            : {}),
+        },
+      };
     }),
   };
 }

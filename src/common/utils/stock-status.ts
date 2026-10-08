@@ -11,14 +11,15 @@ export const STOCK_STATUS_LABEL: Record<StockStatus, string> = {
 };
 
 /**
- * Exact stock counts and cost figures are staff-only everywhere in the app
- * (doc 3.2) — clients and anonymous/public callers only ever see `stockStatus`.
+ * Detailed inventory data includes reservations, procurement cost and value.
+ * Sales staff are limited to physical stock quantities.
  */
+export const canSeeFullInventory = (role?: Role): boolean =>
+  role === Role.ADMIN || role === Role.STOCK_MANAGER || role === Role.DATA_ANALYST;
+
+/** Clients and anonymous visitors only receive qualitative availability. */
 export const canSeeExactStock = (role?: Role): boolean =>
-  role === Role.ADMIN ||
-  role === Role.STOCK_MANAGER ||
-  role === Role.SALES_PERSON ||
-  role === Role.DATA_ANALYST;
+  canSeeFullInventory(role) || role === Role.SALES_PERSON;
 
 /**
  * Client-facing availability only — never expose the exact quantity to

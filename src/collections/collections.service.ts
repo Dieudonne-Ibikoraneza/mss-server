@@ -4,7 +4,7 @@ import { forbidden, notFound } from '@/common/errors/app-error';
 import { Language, Role } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RedisService } from '@/redis/redis.service';
-import { canSeeExactStock } from '@/common/utils/stock-status';
+import { canSeeExactStock, canSeeFullInventory } from '@/common/utils/stock-status';
 import { paginate } from '@/common/dto/pagination.dto';
 import { slugify } from '@/common/utils/slugify';
 import { CreateCollectionDto } from './dto/create-collection.dto';
@@ -76,13 +76,14 @@ export class CollectionsService {
    * The collection with its active products. Exact stock, reservations and
    * cost are staff-only (doc 3.2) and this route is public, so what is cached
    * and what anonymous callers and customers receive has those fields removed;
-   * only staff roles get the full rows, and those are never cached.
+   * sales get physical quantities only; the full inventory view is restricted
+   * to admin/stock/analyst roles. Staff views are never cached here.
    */
   async findOne(id: string, viewerRole?: Role) {
     const staffView = canSeeExactStock(viewerRole);
     const cacheKey = `${DETAIL_CACHE_PREFIX}${id}`;
     if (!staffView) {
-      const cached = await this.redis.get(cacheKey);
+      const cached = await this.redis.get<typeof result>(cacheKey);
       if (cached) return cached;
     }
 
@@ -92,12 +93,15 @@ export class CollectionsService {
     });
     if (!collection) throw notFound('collections.notFound', 'Collection not found.');
 
-    const products = staffView
+    const products = canSeeFullInventory(viewerRole)
       ? collection.products
       : collection.products.map((product) => {
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { quantityOnHandSqm, reservedAreaSqm, averageCostPrice, ...customerSafe } = product;
-          return customerSafe;
+          return {
+            ...customerSafe,
+            ...(staffView ? { quantityOnHandSqm: Number(quantityOnHandSqm) } : {}),
+          };
         });
     const result = { ...collection, products, image: await this.withImageUrl(collection.image) };
     if (!staffView) await this.redis.set(cacheKey, result, CACHE_TTL_SECONDS);

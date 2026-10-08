@@ -14,6 +14,7 @@ import { calculateTileQuantity, piecesFromAreaSqm } from '@/common/utils/tile-ca
 import {
   availableAreaSqmOf,
   canSeeExactStock,
+  canSeeFullInventory,
   getLowStockThreshold,
   stockStatusOf,
 } from '@/common/utils/stock-status';
@@ -28,8 +29,9 @@ import {
   invalidateProductsCache,
 } from './products-cache.util';
 
-/** Two viewers only ever see two different shapes of a product (exact stock or not), so the cache only needs two buckets. */
-const roleBucket = (role?: Role) => (canSeeExactStock(role) ? 'staff' : 'public');
+/** Isolate sales' quantity-only view from full inventory data, including old cached rows. */
+const roleBucket = (role?: Role) =>
+  role === Role.SALES_PERSON ? 'sales-stock:v1' : canSeeFullInventory(role) ? 'staff' : 'public';
 
 /** Products change more often than collections (stock, price), so a shorter TTL than collections'. */
 const CACHE_TTL_SECONDS = 60;
@@ -99,13 +101,16 @@ export class ProductsService {
             // physically hold a partial piece, so any sliver of area smaller
             // than one tile just isn't a whole piece yet.
             quantityOnHandSqm: onHandSqm,
-            reservedAreaSqm: reservedSqm,
             onHandBreakdown: piecesFromAreaSqm(onHandSqm, {
               tileAreaSqm: Number(collection.tileAreaSqm),
               boxCoverageSqm: Number(rest.boxCoverageSqm),
               piecesPerBox: rest.piecesPerBox,
             }),
-            // Cost figures — never exposed to clients/public, same visibility as exact stock.
+          }
+        : {}),
+      ...(canSeeFullInventory(viewerRole)
+        ? {
+            reservedAreaSqm: reservedSqm,
             averageCostPrice: costPrice,
             inventoryValue: onHandSqm * costPrice,
           }
@@ -173,7 +178,7 @@ export class ProductsService {
       `search=${query.search ?? ''}:sort=${query.sort ?? ''}:sizes=${sizes.join(',')}:` +
       `roomTypes=${roomTypes.join(',')}:suitableFors=${suitableFors.join(',')}:` +
       `stockStatuses=${requestedStockStatuses.join(',')}:catalogStatus=${catalogStatus}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.redis.get<typeof result>(cacheKey);
     if (cached) return cached;
 
     const where: Prisma.ProductWhereInput = {
@@ -264,7 +269,7 @@ export class ProductsService {
 
   async findOne(id: string, viewerRole?: Role) {
     const cacheKey = `${productDetailCachePrefix(id)}${roleBucket(viewerRole)}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.redis.get<typeof result>(cacheKey);
     if (cached) return cached;
 
     const [product, threshold] = await Promise.all([
