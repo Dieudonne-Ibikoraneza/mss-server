@@ -5,6 +5,7 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { ReportsService } from './reports.service';
 import { QueryMovementsDto } from './dto/query-movements.dto';
 import { QueryReportDto } from './dto/query-report.dto';
+import { QueryStockExportDto } from './dto/query-stock-export.dto';
 
 /**
  * Stock reporting for the warehouse side of the business (doc 3.10, 3.11) —
@@ -37,13 +38,25 @@ export class ReportsController {
       'Complete stock report data for printing and export, with the selected movement filter',
   })
   @Get('stock/export')
-  stockReportExport(@Query() query: QueryMovementsDto) {
+  stockReportExport(@Query() query: QueryStockExportDto) {
     return this.reportsService.stockReportExport(query);
+  }
+
+  @ApiOperation({ summary: 'Tile choices for customized stock exports, including inactive tiles' })
+  @Get('stock/export/tiles')
+  stockExportTiles() {
+    return this.reportsService.stockExportTiles();
+  }
+
+  @ApiOperation({ summary: 'Collection choices for customized stock exports' })
+  @Get('stock/export/collections')
+  stockExportCollections() {
+    return this.reportsService.stockExportCollections();
   }
 
   @ApiOperation({ summary: 'All matching stock movements for printing and export' })
   @Get('stock/movements/export')
-  stockMovementsExport(@Query() query: QueryMovementsDto) {
+  stockMovementsExport(@Query() query: QueryStockExportDto) {
     return this.reportsService.stockMovementsExport(query);
   }
 

@@ -11,6 +11,9 @@ import {
 } from '@/common/utils/analytics-period';
 import { getLowStockThreshold, stockStatusOf } from '@/common/utils/stock-status';
 import { QueryMovementsDto } from './dto/query-movements.dto';
+import { badRequest, notFound } from '@/common/errors/app-error';
+import { QueryStockExportDto } from './dto/query-stock-export.dto';
+import { resolveStockExportPeriod } from './stock-export-period';
 
 /**
  * "Generate stock reports" (doc 3.10/3.11, stock manager) — stock movements,
@@ -31,16 +34,26 @@ export class ReportsService {
     return this.stockSummaryForPeriod(resolvePeriod(period));
   }
 
-  private async stockSummaryForPeriod(resolved: ResolvedPeriod) {
+  private async stockSummaryForPeriod(
+    resolved: ResolvedPeriod,
+    productId?: string,
+    inventory?: { quantityOnHandSqm: number; averageCostPrice: number; isActive: boolean }[],
+    collectionId?: string,
+  ) {
     const [movements, products, lowStockThreshold] = await Promise.all([
       this.prisma.stockAdjustment.findMany({
-        where: { createdAt: { gte: resolved.from, lt: resolved.to } },
+        where: {
+          createdAt: { gte: resolved.from, lt: resolved.to },
+          productId,
+          ...(collectionId ? { product: { collectionId } } : {}),
+        },
         select: { changeAreaSqm: true, type: true, createdAt: true },
       }),
-      this.prisma.product.findMany({
-        where: { isActive: true },
-        select: { quantityOnHandSqm: true, averageCostPrice: true },
-      }),
+      inventory ??
+        this.prisma.product.findMany({
+          where: this.productScope(productId, collectionId),
+          select: { quantityOnHandSqm: true, averageCostPrice: true, isActive: true },
+        }),
       getLowStockThreshold(this.prisma),
     ]);
 
@@ -64,7 +77,7 @@ export class ReportsService {
       /** Reported as a negative number, matching the signed quantities in the feed. */
       totalOutbound,
       netChange: totalInbound + totalOutbound,
-      activeProducts: products.length,
+      activeProducts: products.filter((row) => row.isActive !== false).length,
       lowStockItems: products.filter((row) => {
         const onHand = Number(row.quantityOnHandSqm);
         return onHand > 0 && onHand <= lowStockThreshold;
@@ -110,12 +123,13 @@ export class ReportsService {
     return paginate(items, total, query.page, query.limit);
   }
 
-  private movementRowsForExport(query: QueryMovementsDto, resolved: ResolvedPeriod) {
+  private movementRowsForExport(query: QueryStockExportDto, resolved: ResolvedPeriod) {
     return this.prisma.stockAdjustment.findMany({
       where: {
         createdAt: { gte: resolved.from, lt: resolved.to },
         type: query.type,
         productId: query.productId,
+        ...(query.collectionId ? { product: { collectionId: query.collectionId } } : {}),
       },
       include: {
         product: { select: { id: true, name: true, sku: true } },
@@ -125,29 +139,150 @@ export class ReportsService {
     });
   }
 
+  /** Lightweight choices include inactive tiles so their remaining stock can be reported. */
+  stockExportTiles() {
+    return this.prisma.product
+      .findMany({
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          isActive: true,
+          image: true,
+          roomTypes: true,
+          suitableFor: true,
+          quantityOnHandSqm: true,
+          collection: { select: { id: true, title: true, size: true, isActive: true } },
+        },
+        orderBy: [{ name: 'asc' }, { sku: 'asc' }],
+      })
+      .then(async (rows) => {
+        const threshold = await getLowStockThreshold(this.prisma);
+        return Promise.all(
+          rows.map(async (tile) => ({
+            ...tile,
+            image: tile.image ? await this.storage.resolveImageUrl(tile.image) : null,
+            quantityOnHandSqm: Number(tile.quantityOnHandSqm),
+            stockStatus: stockStatusOf(Number(tile.quantityOnHandSqm), threshold),
+            size: tile.collection.size,
+          })),
+        );
+      });
+  }
+
+  stockExportCollections() {
+    return this.prisma.collection
+      .findMany({
+        select: {
+          id: true,
+          title: true,
+          size: true,
+          isActive: true,
+          _count: { select: { products: true } },
+        },
+        orderBy: { title: 'asc' },
+      })
+      .then((rows) =>
+        rows.map(({ _count, ...row }) => ({ ...row, productCount: _count.products })),
+      );
+  }
+
+  private productScope(productId?: string, collectionId?: string): Prisma.ProductWhereInput {
+    return productId ? { id: productId } : collectionId ? { collectionId } : { isActive: true };
+  }
+
+  private async selectedCollection(query: QueryStockExportDto) {
+    if (query.productId && query.collectionId)
+      throw badRequest('reports.conflictingScope', 'Choose either a tile or a collection.');
+    if (!query.collectionId) return null;
+    const row = await this.prisma.collection.findUnique({
+      where: { id: query.collectionId },
+      select: {
+        id: true,
+        title: true,
+        size: true,
+        isActive: true,
+        _count: { select: { products: true } },
+      },
+    });
+    if (!row)
+      throw notFound('reports.collectionNotFound', 'The selected collection was not found.');
+    const { _count, ...collection } = row;
+    return { ...collection, productCount: _count.products };
+  }
+
+  private async currentStockValuation(productId?: string, collectionId?: string) {
+    const rows = await this.prisma.product.findMany({
+      where: this.productScope(productId, collectionId),
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        isActive: true,
+        quantityOnHandSqm: true,
+        averageCostPrice: true,
+        collection: { select: { size: true } },
+      },
+      orderBy: [{ name: 'asc' }, { sku: 'asc' }],
+    });
+    if (productId && rows.length === 0)
+      throw notFound('reports.tileNotFound', 'The selected tile was not found.');
+    return rows.map((row) => {
+      const quantityOnHandSqm = Number(row.quantityOnHandSqm);
+      const averageCostPrice = Number(row.averageCostPrice);
+      return {
+        productId: row.id,
+        name: row.name,
+        sku: row.sku,
+        size: row.collection.size,
+        isActive: row.isActive,
+        quantityOnHandSqm,
+        averageCostPrice,
+        inventoryValue: quantityOnHandSqm * averageCostPrice,
+      };
+    });
+  }
+
+  private selectedTile(
+    productId: string | undefined,
+    valuation: Awaited<ReturnType<ReportsService['currentStockValuation']>>,
+  ) {
+    const row = productId ? valuation[0] : undefined;
+    return row
+      ? { id: row.productId, name: row.name, sku: row.sku, size: row.size, isActive: row.isActive }
+      : null;
+  }
+
   /** One complete read of the selected journal, independent of the visible page. */
-  async stockMovementsExport(query: QueryMovementsDto) {
+  async stockMovementsExport(query: QueryStockExportDto) {
     const generatedAt = new Date();
-    const resolved = resolvePeriod(query.period, generatedAt);
+    const resolved = resolveStockExportPeriod(query, generatedAt);
+    const collection = await this.selectedCollection(query);
+    const valuation = await this.currentStockValuation(query.productId, query.collectionId);
     return {
       generatedAt,
       period: resolved.period,
       from: resolved.from,
       to: resolved.to,
       movementType: query.type ?? 'ALL',
+      tile: this.selectedTile(query.productId, valuation),
+      collection,
+      valuation,
       items: await this.movementRowsForExport(query, resolved),
     };
   }
 
   /** Inventory and fulfilment are current; movement totals use one captured reporting window. */
-  async stockReportExport(query: QueryMovementsDto) {
+  async stockReportExport(query: QueryStockExportDto) {
     const generatedAt = new Date();
-    const resolved = resolvePeriod(query.period, generatedAt);
+    const resolved = resolveStockExportPeriod(query, generatedAt);
+    const collection = await this.selectedCollection(query);
+    const valuation = await this.currentStockValuation(query.productId, query.collectionId);
     const [summary, movements, lowStock, fulfillment] = await Promise.all([
-      this.stockSummaryForPeriod(resolved),
+      this.stockSummaryForPeriod(resolved, query.productId, valuation, query.collectionId),
       this.movementRowsForExport(query, resolved),
-      this.lowStock(null),
-      this.fulfillmentQueue(null),
+      this.lowStock(null, query.productId, query.collectionId),
+      this.fulfillmentQueue(null, query.productId, query.collectionId),
     ]);
     return {
       generatedAt,
@@ -155,6 +290,9 @@ export class ReportsService {
       from: resolved.from,
       to: resolved.to,
       movementType: query.type ?? 'ALL',
+      tile: this.selectedTile(query.productId, valuation),
+      collection,
+      valuation,
       summary,
       movements,
       lowStock,
@@ -163,10 +301,10 @@ export class ReportsService {
   }
 
   /** The alert list the stock overview leads with: what needs restocking, worst first. */
-  async lowStock(limit: number | null = 20) {
+  async lowStock(limit: number | null = 20, productId?: string, collectionId?: string) {
     const [products, lowStockThreshold] = await Promise.all([
       this.prisma.product.findMany({
-        where: { isActive: true },
+        where: this.productScope(productId, collectionId),
         select: {
           id: true,
           name: true,
@@ -208,19 +346,32 @@ export class ReportsService {
   }
 
   /** Orders the warehouse still has to act on, for the stock overview's fulfilment queue. */
-  async fulfillmentQueue(limit: number | null = 20) {
+  async fulfillmentQueue(limit: number | null = 20, productId?: string, collectionId?: string) {
     const pendingStatuses: OrderStatus[] = [
       OrderStatus.PENDING,
       OrderStatus.PROCESSING,
       OrderStatus.READY_FOR_DISPATCH,
     ];
+    const where: Prisma.OrderWhereInput = {
+      status: { in: pendingStatuses },
+      ...(productId || collectionId
+        ? { items: { some: { ...(productId ? { productId } : { product: { collectionId } }) } } }
+        : {}),
+    };
 
     const [orders, counts] = await Promise.all([
       this.prisma.order.findMany({
-        where: { status: { in: pendingStatuses } },
+        where,
         include: {
           customer: { select: { id: true, fullName: true } },
-          items: { select: { totalPieces: true } },
+          items: {
+            where: productId
+              ? { productId }
+              : collectionId
+                ? { product: { collectionId } }
+                : undefined,
+            select: { totalPieces: true },
+          },
           delivery: true,
         },
         orderBy: { createdAt: 'asc' },
@@ -228,7 +379,7 @@ export class ReportsService {
       }),
       this.prisma.order.groupBy({
         by: ['status'],
-        where: { status: { in: pendingStatuses } },
+        where,
         _count: { _all: true },
       }),
     ]);
